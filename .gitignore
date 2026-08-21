@@ -1,0 +1,14 @@
+node_modules/
+dist/
+android/.gradle/
+android/app/build/
+.idea/
+*.log
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+capacitor.config.js
+capacitor.config.d.ts
+.env
+.env.*
+!.env.example

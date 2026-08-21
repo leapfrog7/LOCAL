@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">LOCAL</string>
+    <string name="title_activity_main">LOCAL</string>
+    <string name="package_name">in.local.vault</string>
+    <string name="custom_url_scheme">in.local.vault</string>
+</resources>
