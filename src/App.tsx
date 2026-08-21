@@ -15,6 +15,7 @@ import { documentStorageService } from './services/documentStorageService'
 import { searchService, pageMatches, type DocumentSearchResult } from './services/searchService'
 import { ZoomablePage } from './features/viewer/components/ZoomablePage'
 import { checkDocumentStorage } from './services/storageHealthService'
+import { InAppCamera } from './features/scanner/components/InAppCamera'
 
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
 const statusLabel = (doc: VaultDocument) => {
@@ -114,8 +115,8 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
   const [captureError, setCaptureError] = useState('')
   const [title, setTitle] = useState('')
   const [folder, setFolder] = useState('Unfiled')
+  const [cameraOpen, setCameraOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  const cameraRef = useRef<HTMLInputElement>(null)
   const addFiles = async (files: FileList | null) => {
     if (!files?.length) return
     setProcessing(true); setCaptureError('')
@@ -145,22 +146,22 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
   }
   const editingPage = pages.find(page => page.id === editingPageId)
   if (editingPage) return <ScanPageEditor page={editingPage} pageNumber={pages.indexOf(editingPage) + 1} onCancel={() => setEditingPageId(null)} onSave={updated => { setPages(current => current.map(page => page.id === updated.id ? updated : page)); setEditingPageId(null) }} />
+  if (cameraOpen) return <InAppCamera pageCount={pages.length} onClose={() => setCameraOpen(false)} onImport={() => { setCameraOpen(false); setTimeout(() => inputRef.current?.click()) }} onCapture={async file => { setProcessing(true); setCaptureError(''); try { const captured = await filesToPages([file]); setPages(currentPages => [...currentPages, ...captured]) } catch { setCaptureError('The captured page could not be processed. Please try again.') } finally { setProcessing(false) } }} />
 
   return <div className="full-screen">
     <header className="top-bar"><button onClick={onClose} aria-label="Cancel"><X /></button><div><strong>New scan</strong><span>{saving ? 'Saving safely on this device…' : processing ? 'Finding document edges…' : pages.length ? `${pages.length} page${pages.length === 1 ? '' : 's'} captured` : 'Add your pages'}</span></div><button className="text-action" disabled={!pages.length || processing || saving} onClick={() => void save()}>{saving ? 'Saving…' : 'Save'}</button></header>
     {!pages.length ? <section className="capture-empty">
       <div className="viewfinder"><span /><span /><span /><span /><FileText /></div>
       <h2>Ready to scan</h2><p>Place the document on a flat surface with good lighting.</p>
-      <button className="primary-button" onClick={() => cameraRef.current?.click()}><Camera /> Open camera</button>
+      <button className="primary-button" onClick={() => setCameraOpen(true)}><Camera /> Open LOCAL camera</button>
       <button className="secondary-button" onClick={() => inputRef.current?.click()}><Upload /> Import photos</button>
     </section> : <>
       <section className="scan-form"><label>Document title<input value={title} onChange={event => setTitle(event.target.value)} placeholder="e.g. Office memorandum" autoFocus /></label><label>Folder<select value={folder} onChange={event => setFolder(event.target.value)}><option>Unfiled</option><option>Office</option><option>Personal</option><option>Receipts</option><option>Legal</option></select></label></section>
       <section className="page-grid">{pages.map((page, index) => <article className="page-card" key={page.id}><button className="page-image" onClick={() => setEditingPageId(page.id)} aria-label={`Edit crop and enhancement for page ${index + 1}`}><img src={page.imageUrl} alt={`Page ${index + 1}`} style={{ transform: `rotate(${page.rotation}deg)` }} /><span>{index + 1}</span>{page.processingState === 'needs_review' && <small>Check crop</small>}</button><div className="page-meta"><span>{page.renderPreset === 'black-white' ? 'B&W' : page.renderPreset === 'grayscale' ? 'Grayscale' : 'Clean Colour'}</span><button onClick={() => setEditingPageId(page.id)} aria-label={`Edit page ${index + 1}`}><Crop /></button><button onClick={() => rotate(page.id)} aria-label={`Rotate page ${index + 1}`}><RotateCw /></button><button onClick={() => movePage(index, -1)} disabled={index === 0} aria-label={`Move page ${index + 1} earlier`}><ArrowLeft /></button><button onClick={() => movePage(index, 1)} disabled={index === pages.length - 1} aria-label={`Move page ${index + 1} later`}><ChevronRight /></button><button onClick={() => setPages(current => current.filter(item => item.id !== page.id))} aria-label={`Delete page ${index + 1}`}><Trash2 /></button></div></article>)}</section>
       {processing && <div className="page-processing"><span className="button-spinner" /> Processing each page on this device…</div>}
       {captureError && <div className="scanner-error" role="alert">{captureError}</div>}
-      <button className="add-page" onClick={() => cameraRef.current?.click()} disabled={processing}><ImagePlus /> Add another page</button>
+      <button className="add-page" onClick={() => setCameraOpen(true)} disabled={processing}><ImagePlus /> Add another page</button>
     </>}
-    <input ref={cameraRef} className="hidden-input" type="file" accept="image/*" capture="environment" multiple onChange={event => void addFiles(event.target.files)} />
     <input ref={inputRef} className="hidden-input" type="file" accept="image/*" multiple onChange={event => void addFiles(event.target.files)} />
   </div>
 }
