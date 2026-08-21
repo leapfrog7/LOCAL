@@ -2,7 +2,16 @@ import type { PageCorners, Point } from '../../../domain/types'
 import { loadImage } from './imageUtils'
 
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y)
-const interpolate = (a: Point, b: Point, amount: number): Point => ({ x: a.x + (b.x - a.x) * amount, y: a.y + (b.y - a.y) * amount })
+export function projectiveMapper(topLeft: Point, topRight: Point, bottomRight: Point, bottomLeft: Point) {
+  const dx1 = topRight.x - bottomRight.x, dx2 = bottomLeft.x - bottomRight.x, dx3 = topLeft.x - topRight.x + bottomRight.x - bottomLeft.x
+  const dy1 = topRight.y - bottomRight.y, dy2 = bottomLeft.y - bottomRight.y, dy3 = topLeft.y - topRight.y + bottomRight.y - bottomLeft.y
+  const denominator = dx1 * dy2 - dx2 * dy1
+  const g = Math.abs(denominator) < .000001 ? 0 : (dx3 * dy2 - dx2 * dy3) / denominator
+  const h = Math.abs(denominator) < .000001 ? 0 : (dx1 * dy3 - dx3 * dy1) / denominator
+  const a = topRight.x - topLeft.x + g * topRight.x, b = bottomLeft.x - topLeft.x + h * bottomLeft.x, c = topLeft.x
+  const d = topRight.y - topLeft.y + g * topRight.y, e = bottomLeft.y - topLeft.y + h * bottomLeft.y, f = topLeft.y
+  return (u: number, v: number): Point => { const scale = g * u + h * v + 1; return { x: (a * u + b * v + c) / scale, y: (d * u + e * v + f) / scale } }
+}
 
 function drawTriangle(context: CanvasRenderingContext2D, image: HTMLImageElement, source: Point[], target: Point[]) {
   const [s0, s1, s2] = source, [d0, d1, d2] = target
@@ -36,10 +45,10 @@ export async function correctPerspective(imageSource: string, corners: PageCorne
   const width = Math.max(320, Math.round(rawWidth * scale)), height = Math.max(320, Math.round(rawHeight * scale))
   const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height
   const context = canvas.getContext('2d'); if (!context) throw new Error('Perspective correction is unavailable.')
-  const steps = 12
+  const sourceAt = projectiveMapper(points.topLeft, points.topRight, points.bottomRight, points.bottomLeft)
+  const steps = Math.max(16, Math.min(32, Math.ceil(Math.max(width, height) / 80)))
   for (let row = 0; row < steps; row += 1) for (let column = 0; column < steps; column += 1) {
     const u0 = column / steps, u1 = (column + 1) / steps, v0 = row / steps, v1 = (row + 1) / steps
-    const sourceAt = (u: number, v: number) => interpolate(interpolate(points.topLeft, points.topRight, u), interpolate(points.bottomLeft, points.bottomRight, u), v)
     const s00 = sourceAt(u0, v0), s10 = sourceAt(u1, v0), s11 = sourceAt(u1, v1), s01 = sourceAt(u0, v1)
     const d00 = { x: u0 * width, y: v0 * height }, d10 = { x: u1 * width, y: v0 * height }, d11 = { x: u1 * width, y: v1 * height }, d01 = { x: u0 * width, y: v1 * height }
     drawTriangle(context, image, [s00, s10, s11], [d00, d10, d11]); drawTriangle(context, image, [s00, s11, s01], [d00, d11, d01])

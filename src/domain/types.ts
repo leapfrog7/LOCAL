@@ -13,6 +13,7 @@ export interface DocumentPage {
   corners?: PageCorners
   detectionConfidence?: number
   renderPreset?: RenderPreset
+  adjustments?: ProcessingAdjustments
   processingState?: PageProcessingState
   rotation: number
   ocrText: string
@@ -21,7 +22,16 @@ export interface DocumentPage {
   ocrLanguages?: string[]
 }
 
-export type RenderPreset = 'clean-colour' | 'grayscale' | 'black-white'
+export type RenderPreset = 'original' | 'auto' | 'clean-colour' | 'document' | 'grayscale' | 'black-white' | 'photocopy'
+export interface ProcessingAdjustments {
+  brightness: number
+  contrast: number
+  whites: number
+  shadows: number
+  warmth: number
+  sharpness: number
+  noiseReduction: number
+}
 export type PageProcessingState = 'captured' | 'detecting' | 'needs_review' | 'processing' | 'processed' | 'error'
 export interface Point { x: number; y: number }
 export interface PageCorners { topLeft: Point; topRight: Point; bottomRight: Point; bottomLeft: Point }

@@ -125,6 +125,20 @@ button, input, select { touch-action: manipulation; }
   .page-grid { padding-inline: 12px; }
 }
 
+.crop-actions { display: flex; justify-content: center; gap: 8px; padding: 10px; background: #29312d; }
+.crop-actions button, .adjust-toggle { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 13px; border: 1px solid #ffffff24; border-radius: 10px; color: #e5eee8; background: #ffffff0d; font-size: 11px; font-weight: 750; }
+.crop-actions svg, .adjust-toggle svg { width: 16px; }
+.preset-selector { grid-template-columns: repeat(4, minmax(0, 1fr)); overflow-x: auto; }
+.adjust-toggle { width: calc(100% - 20px); margin: 7px 10px 2px; border-color: #ffffff24; background: #35413b; }
+.adjust-panel { display: grid; gap: 10px; padding: 12px 16px; color: #e5eee8; background: #29312d; }
+.adjust-panel label { display: grid; gap: 4px; }.adjust-panel label > span { display: flex; justify-content: space-between; font-size: 10px; font-weight: 700; }.adjust-panel output { color: #acd8bd; }
+.adjust-panel input { width: 100%; accent-color: #71b58d; }.adjust-panel > button { min-height: 38px; border: 1px solid #ffffff24; border-radius: 9px; color: white; background: #ffffff0c; font-size: 10px; }
+.ocr-diagnostics { margin-top: 14px; padding: 13px; border-radius: 12px; color: #e5eee8; background: #1f2924; }
+.ocr-diagnostics > strong { font-size: 13px; }.ocr-diagnostics dl { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.ocr-diagnostics dl div { display: flex; justify-content: space-between; gap: 8px; padding: 6px; border-radius: 7px; background: #ffffff0a; font-size: 9px; }.ocr-diagnostics dt { color: #aeb9b2; }.ocr-diagnostics dd { margin: 0; font-weight: 800; }
+.ocr-diagnostics pre { max-height: 220px; overflow: auto; padding: 10px; border-radius: 8px; white-space: pre-wrap; color: #203029; background: #f8f6f0; font: 11px/1.45 ui-monospace, monospace; }
+.lab-output-heading { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
+
 /* LOCAL scanner editor */
 .page-image { width: 100%; padding: 0; border: 0; cursor: pointer; }
 .page-image small { position: absolute; right: 6px; top: 6px; padding: 4px 6px; border-radius: 6px; color: #714b12; background: #ffe9b7ed; font-size: 9px; font-weight: 800; }

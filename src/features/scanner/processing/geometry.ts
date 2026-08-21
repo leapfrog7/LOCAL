@@ -13,5 +13,11 @@ export function validateDocumentGeometry(corners: PageCorners) {
   const height = (distance(points[0], points[3]) + distance(points[1], points[2])) / 2
   const aspectRatio = width / Math.max(height, .001)
   const plausibleAspect = aspectRatio > .38 && aspectRatio < 1.8
-  return { valid: convex && area > .2 && plausibleAspect, area, convex, aspectRatio }
+  const angles = points.map((point, index) => {
+    const previous = points[(index + 3) % 4], next = points[(index + 1) % 4]
+    const ax = previous.x - point.x, ay = previous.y - point.y, bx = next.x - point.x, by = next.y - point.y
+    return Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / Math.max(distance(previous, point) * distance(next, point), .0001)))) * 180 / Math.PI
+  })
+  const rectangularity = Math.max(0, 1 - angles.reduce((sum, angle) => sum + Math.abs(90 - angle), 0) / 180)
+  return { valid: convex && area > .12 && plausibleAspect, area, convex, aspectRatio, angles, rectangularity }
 }
