@@ -16,7 +16,8 @@ async function getWorker() {
     await worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO, preserve_interword_spaces: '1', user_defined_dpi: '300' })
     return worker
   })()
-  return workerPromise
+  try { return await workerPromise }
+  catch (error) { workerPromise = undefined; throw error }
 }
 
 // All runtime, WASM core variants, and English/Hindi traineddata are packaged under public/ocr.
@@ -33,5 +34,6 @@ export const ocrService: OCRService = {
 
 export async function disposeOCRWorker() {
   if (!workerPromise) return
-  const worker = await workerPromise; await worker.terminate(); workerPromise = undefined
+  try { const worker = await workerPromise; await worker.terminate() }
+  finally { workerPromise = undefined }
 }

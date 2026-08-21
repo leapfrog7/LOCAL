@@ -16,7 +16,7 @@ const safeFilename = (title: string) => `${title.trim().replace(/[<>:"/\\|?*\u00
 export const pdfService: PdfService = {
   async create(vaultDocument) {
     if (!vaultDocument.pages.length) throw new Error('This document has no pages.')
-    const { jsPDF, GState } = await import('jspdf')
+    const { jsPDF } = await import('jspdf')
     let pdf: InstanceType<typeof jsPDF> | undefined
 
     for (const [index, page] of vaultDocument.pages.entries()) {
@@ -38,11 +38,8 @@ export const pdfService: PdfService = {
       context.drawImage(image, -image.width / 2, -image.height / 2)
       pdf.addImage(canvas.toDataURL('image/jpeg', 0.88), 'JPEG', 0, 0, width, height, `page-${index}`, 'FAST')
       if (page.ocrText.trim()) {
-        pdf.saveGraphicsState()
-        pdf.setGState(new GState({ opacity: 0 }))
         pdf.setFontSize(Math.max(8, Math.round(width / 90)))
-        pdf.text(pdf.splitTextToSize(page.ocrText, width - 32), 16, 24, { baseline: 'top' })
-        pdf.restoreGraphicsState()
+        pdf.text(pdf.splitTextToSize(page.ocrText, width - 32), 16, 24, { baseline: 'top', renderingMode: 'invisible' })
       }
     }
     return pdf!.output('blob')

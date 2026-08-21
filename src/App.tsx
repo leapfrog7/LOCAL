@@ -20,7 +20,7 @@ import { InAppCamera } from './features/scanner/components/InAppCamera'
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
 const statusLabel = (doc: VaultDocument) => {
   if (doc.status === 'indexed') return 'Searchable'
-  if (doc.status === 'error') return 'Needs attention'
+  if (doc.status === 'error') { const failed = doc.pages.filter(page => page.ocrState === 'error').length; return `${failed || 1} ${failed === 1 ? 'page needs' : 'pages need'} OCR retry` }
   const done = doc.pages.filter(page => page.ocrState === 'complete').length
   return done ? `Indexing ${done} of ${doc.pages.length}` : 'Preparing searchable text'
 }
@@ -146,7 +146,7 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
   }
   const editingPage = pages.find(page => page.id === editingPageId)
   if (editingPage) return <ScanPageEditor page={editingPage} pageNumber={pages.indexOf(editingPage) + 1} onCancel={() => setEditingPageId(null)} onSave={updated => { setPages(current => current.map(page => page.id === updated.id ? updated : page)); setEditingPageId(null) }} />
-  if (cameraOpen) return <InAppCamera pageCount={pages.length} onClose={() => setCameraOpen(false)} onImport={() => { setCameraOpen(false); setTimeout(() => inputRef.current?.click()) }} onCapture={async file => { setProcessing(true); setCaptureError(''); try { const captured = await filesToPages([file]); setPages(currentPages => [...currentPages, ...captured]) } catch { setCaptureError('The captured page could not be processed. Please try again.') } finally { setProcessing(false) } }} />
+  if (cameraOpen) return <InAppCamera pageCount={pages.length} latestPageUrl={pages.at(-1)?.thumbnailUrl || pages.at(-1)?.imageUrl} onClose={() => setCameraOpen(false)} onDone={() => setCameraOpen(false)} onRetake={() => setPages(currentPages => currentPages.slice(0, -1))} onImport={() => { setCameraOpen(false); setTimeout(() => inputRef.current?.click()) }} onCapture={async file => { setProcessing(true); setCaptureError(''); try { const captured = await filesToPages([file]); setPages(currentPages => [...currentPages, ...captured]) } catch { setCaptureError('The captured page could not be processed. Please try again.') } finally { setProcessing(false) } }} />
 
   return <div className="full-screen">
     <header className="top-bar"><button onClick={onClose} aria-label="Cancel"><X /></button><div><strong>New scan</strong><span>{saving ? 'Saving safely on this device…' : processing ? 'Finding document edges…' : pages.length ? `${pages.length} page${pages.length === 1 ? '' : 's'} captured` : 'Add your pages'}</span></div><button className="text-action" disabled={!pages.length || processing || saving} onClick={() => void save()}>{saving ? 'Saving…' : 'Save'}</button></header>

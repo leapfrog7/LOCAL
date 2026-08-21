@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Camera, ImagePlus, RefreshCw, X } from 'lucide-react'
+import { Camera, Check, ImagePlus, RefreshCw, RotateCcw, X } from 'lucide-react'
 
-export function InAppCamera({ pageCount, onCapture, onImport, onClose }: { pageCount: number; onCapture: (file: File) => Promise<void>; onImport: () => void; onClose: () => void }) {
+export function InAppCamera({ pageCount, latestPageUrl, onCapture, onRetake, onDone, onImport, onClose }: { pageCount: number; latestPageUrl?: string; onCapture: (file: File) => Promise<void>; onRetake: () => void; onDone: () => void; onImport: () => void; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | undefined>(undefined)
   const [ready, setReady] = useState(false)
@@ -49,6 +49,6 @@ export function InAppCamera({ pageCount, onCapture, onImport, onClose }: { pageC
     <div className="camera-frame"><i /><i /><i /><i /></div>
     {!ready && !error && <div className="camera-message"><span className="button-spinner" /> Starting camera…</div>}
     {error && <div className="camera-message error" role="alert">{error}<button onClick={() => void startCamera()}>Try again</button></div>}
-    <footer className="camera-controls"><button className="camera-import" onClick={onImport} aria-label="Import photos"><ImagePlus /><span>Photos</span></button><button className="shutter" onClick={() => void capture()} disabled={!ready || capturing} aria-label="Capture page"><span>{capturing ? <span className="button-spinner" /> : <Camera />}</span></button><div className="page-counter">{pageCount || ''}</div></footer>
+    <footer className="camera-controls">{latestPageUrl ? <button className="camera-preview" onClick={onRetake} aria-label="Retake last page"><img src={latestPageUrl} alt="Latest captured page" /><span><RotateCcw /> Retake</span><b>{pageCount}</b></button> : <button className="camera-import" onClick={onImport} aria-label="Import photos"><ImagePlus /><span>Photos</span></button>}<button className="shutter" onClick={() => void capture()} disabled={!ready || capturing} aria-label={pageCount ? 'Capture another page' : 'Capture page'}><span>{capturing ? <span className="button-spinner" /> : <Camera />}</span></button>{pageCount ? <button className="camera-done" onClick={onDone}><Check /> Done</button> : <div className="page-counter" />}</footer>
   </div>
 }

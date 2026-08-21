@@ -36,6 +36,7 @@ export async function processDocument(id: string, onProgress?: (document: VaultD
       try {
         const result = await ocrService.recognize(page, progress => { job.progress = progress })
         if (await processingJobRepository.isCancelled(document.id)) { page.ocrState = 'pending'; await documentsRepository.save(document); break }
+        if (!result.text.trim()) throw new Error('No readable text was detected on this page.')
         page.ocrText = result.text; page.ocrConfidence = result.confidence; page.ocrLanguages = result.languages; page.ocrState = 'complete'
         await processingJobRepository.upsert({ ...job, status: 'complete', attempts: job.attempts + 1, progress: 1, updatedAt: new Date().toISOString() })
       } catch (error) {

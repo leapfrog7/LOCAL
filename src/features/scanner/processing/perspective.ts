@@ -14,8 +14,11 @@ function drawTriangle(context: CanvasRenderingContext2D, image: HTMLImageElement
   const d = (d0.y * (s1.x - s2.x) + d1.y * (s2.x - s0.x) + d2.y * (s0.x - s1.x)) / denominator
   const e = (d0.x * (s2.x * s1.y - s1.x * s2.y) + d1.x * (s0.x * s2.y - s2.x * s0.y) + d2.x * (s1.x * s0.y - s0.x * s1.y)) / denominator
   const f = (d0.y * (s2.x * s1.y - s1.x * s2.y) + d1.y * (s0.x * s2.y - s2.x * s0.y) + d2.y * (s1.x * s0.y - s0.x * s1.y)) / denominator
+  const center = { x: (d0.x + d1.x + d2.x) / 3, y: (d0.y + d1.y + d2.y) / 3 }
+  const expand = (point: Point) => { const length = Math.hypot(point.x - center.x, point.y - center.y) || 1; return { x: center.x + (point.x - center.x) * (length + 1.25) / length, y: center.y + (point.y - center.y) * (length + 1.25) / length } }
+  const [c0, c1, c2] = target.map(expand)
   context.save()
-  context.beginPath(); context.moveTo(d0.x, d0.y); context.lineTo(d1.x, d1.y); context.lineTo(d2.x, d2.y); context.closePath(); context.clip()
+  context.beginPath(); context.moveTo(c0.x, c0.y); context.lineTo(c1.x, c1.y); context.lineTo(c2.x, c2.y); context.closePath(); context.clip()
   context.setTransform(a, b, c, d, e, f); context.drawImage(image, 0, 0); context.restore()
 }
 
