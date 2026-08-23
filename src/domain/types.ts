@@ -75,4 +75,4 @@ export interface DocumentSmartMetadata {
   identifier?: { type: 'invoice' | 'bill' | 'receipt' | 'order' | 'reference' | 'policy'; value: string }
 }
 
-export type Screen = { name: 'home' | 'folders' | 'settings' | 'scanner-lab' } | { name: 'viewer'; id: string; page?: number; query?: string } | { name: 'capture' }
+export type Screen = { name: 'home' | 'folders' | 'actions' | 'settings' | 'scanner-lab' } | { name: 'viewer'; id: string; page?: number; query?: string } | { name: 'capture' }

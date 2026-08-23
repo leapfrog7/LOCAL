@@ -1,14 +1,23 @@
 apply plugin: 'com.android.application'
 
+import groovy.json.JsonSlurper
+
+def packageMetadata = new JsonSlurper().parseText(file('../../package.json').text)
+def releaseStoreFile = System.getenv('LOCAL_RELEASE_STORE_FILE')
+def releaseStorePassword = System.getenv('LOCAL_RELEASE_STORE_PASSWORD')
+def releaseKeyAlias = System.getenv('LOCAL_RELEASE_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('LOCAL_RELEASE_KEY_PASSWORD')
+def releaseSigningReady = [releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword].every { it }
+
 android {
     namespace "in.local.vault"
     compileSdk rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "in.local.vault"
+        applicationId System.getenv('LOCAL_APPLICATION_ID') ?: "in.local.vault"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode Integer.parseInt(System.getenv('LOCAL_VERSION_CODE') ?: '1')
+        versionName packageMetadata.version
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,10 +25,25 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (releaseSigningReady) {
+            release {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+            }
+        }
+    }
     buildTypes {
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (releaseSigningReady) signingConfig signingConfigs.release
         }
     }
 }

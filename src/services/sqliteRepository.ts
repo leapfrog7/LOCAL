@@ -201,6 +201,10 @@ export const sqliteRepository = {
   async getSetting(key: string) { const db = await getConnection(), row = ((await db.query('SELECT value FROM settings WHERE key = ?', [key])).values ?? [])[0]; return row ? text(row.value) : undefined },
   async setSetting(key: string, value: string) { const db = await getConnection(); await db.run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [key, value]) },
 
+  async listFolders() { const db = await getConnection(); return ((await db.query('SELECT name FROM folders ORDER BY lower(name)')).values ?? []).map(row => text(row.name)).filter(Boolean) },
+  async createFolder(name: string) { const db = await getConnection(); await db.run('INSERT OR IGNORE INTO folders(name,created_at) VALUES(?,?)', [name, new Date().toISOString()]) },
+  async removeFolder(name: string) { const db = await getConnection(); await db.run('DELETE FROM folders WHERE name = ?', [name]) },
+
   async upsertJob(job: ProcessingJob) {
     return serializeWrite(async () => {
       const db = await getConnection(); await db.run(`INSERT INTO processing_jobs(id,document_id,page_id,type,status,attempts,progress,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)

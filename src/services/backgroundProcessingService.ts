@@ -1,5 +1,5 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
-import type { DetectedBarcode, OCRWord } from '../domain/types'
+import type { DetectedBarcode, OCRWord, VaultDocument } from '../domain/types'
 
 export type NativeWorkState = 'absent' | 'enqueued' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled'
 export interface NativeOcrPageResult {
@@ -23,7 +23,7 @@ export interface NativeOcrResult {
 }
 
 type BackgroundProcessingPlugin = {
-  enqueue(options: { documentId: string; replace?: boolean }): Promise<{ workId: string; state: NativeWorkState }>
+  enqueue(options: { documentId: string; replace?: boolean; pages: { id: string; imagePath?: string; ocrImagePath?: string; rotation: number }[] }): Promise<{ workId: string; state: NativeWorkState }>
   cancel(options: { documentId: string }): Promise<{ state: NativeWorkState }>
   status(options: { documentId: string }): Promise<{ workId?: string; state: NativeWorkState }>
   result(options: { documentId: string }): Promise<NativeOcrResult>
@@ -36,9 +36,10 @@ const available = () => Capacitor.isNativePlatform() && Capacitor.getPlatform() 
 
 export const backgroundProcessingService = {
   available,
-  async enqueue(documentId: string, replace = false) {
+  async enqueue(document: VaultDocument, replace = false) {
     if (!available()) return { state: 'absent' as const }
-    return nativeBackgroundProcessing.enqueue({ documentId, replace })
+    const pages = document.pages.filter(page => page.ocrState !== 'complete').map(page => ({ id: page.id, imagePath: page.imagePath, ocrImagePath: page.ocrImagePath, rotation: page.rotation }))
+    return nativeBackgroundProcessing.enqueue({ documentId: document.id, replace, pages })
   },
   async cancel(documentId: string) {
     if (!available()) return

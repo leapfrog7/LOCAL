@@ -58,7 +58,7 @@ async function applyNativeResult(document: VaultDocument, result: NativeOcrResul
     if (page.ocrState === 'complete') {
       await processingJobRepository.upsert({ id: `ocr:${document.id}:${page.id}`, documentId: document.id, pageId: page.id, type: 'ocr', status: 'complete', attempts: 1, progress: 1, createdAt: now, updatedAt: now })
     } else if (page.ocrState === 'error') {
-      await processingJobRepository.upsert({ id: `ocr:${document.id}:${page.id}`, documentId: document.id, pageId: page.id, type: 'ocr', status: 'error', attempts: 1, progress: 0, error: pageErrors.get(page.id), createdAt: now, updatedAt: now })
+      await processingJobRepository.upsert({ id: `ocr:${document.id}:${page.id}`, documentId: document.id, pageId: page.id, type: 'ocr', status: 'error', attempts: 1, progress: 0, error: pageErrors.get(page.id) ?? result.error, createdAt: now, updatedAt: now })
     }
   }
   await documentsRepository.save(document)
@@ -89,7 +89,7 @@ async function reconcileNativeDocument(id: string, onProgress?: (document: Vault
       document.pages.forEach(page => { if (page.ocrState !== 'complete') page.ocrState = 'error' })
       await documentsRepository.save(document); onProgress?.({ ...document })
     } else if ((work.state === 'absent' || work.state === 'cancelled') && (document.status === 'ocr_pending' || document.status === 'ocr_processing')) {
-      await backgroundProcessingService.enqueue(id, false)
+      await backgroundProcessingService.enqueue(document, false)
       document.status = 'ocr_processing'; await documentsRepository.save(document); onProgress?.({ ...document })
     }
   } finally { active.delete(id) }
@@ -111,7 +111,7 @@ export async function processDocument(id: string, onProgress?: (document: VaultD
     await documentsRepository.save(document)
     onProgress?.({ ...document })
     if (backgroundProcessingService.available()) {
-      await backgroundProcessingService.enqueue(id, enqueue)
+      await backgroundProcessingService.enqueue(document, enqueue)
       return
     }
     const jobs = (await processingJobRepository.pending()).filter(job => job.documentId === document.id && job.type === 'ocr')
@@ -128,7 +128,6 @@ export async function processDocument(id: string, onProgress?: (document: VaultD
       try {
         const result = await ocrService.recognize(page, progress => { job.progress = progress })
         if (await processingJobRepository.isCancelled(document.id)) { page.ocrState = 'pending'; await documentsRepository.save(document); break }
-        if (!result.text.trim()) throw new Error('No readable text was detected on this page.')
         page.ocrText = result.text; page.ocrConfidence = result.confidence; page.ocrLanguages = result.languages; page.ocrWords = result.words; page.ocrState = 'complete'
         await processingJobRepository.upsert({ ...job, status: 'complete', attempts: job.attempts + 1, progress: 1, updatedAt: new Date().toISOString() })
         console.info('[processing] OCR job completed', { documentId: document.id, pageId: page.id, confidence: result.confidence })

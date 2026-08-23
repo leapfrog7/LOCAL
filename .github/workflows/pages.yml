@@ -1,4 +1,4 @@
-name: Test and deploy LOCAL
+name: Test and deploy LOCAL download page
 
 on:
   push:
@@ -25,11 +25,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npm run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: site
 
   deploy:
     environment:

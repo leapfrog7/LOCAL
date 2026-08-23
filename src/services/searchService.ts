@@ -100,7 +100,9 @@ export function matchesSmartFilter(document: VaultDocument, filter: SmartSearchF
   if (filter === 'prescriptions') return type === 'prescription'
   if (filter === 'statements') return type === 'bank_statement'
   if (filter === 'needs_attention') return document.status === 'error' || document.pages.some(page => page.processingState === 'needs_review')
-  const date = new Date(document.smartMetadata?.documentDate ?? document.createdAt)
+  // Recency means when the user added the file to LOCAL. The date printed in an
+  // invoice or statement can legitimately be much older than the scan.
+  const date = new Date(document.createdAt)
   return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()
 }
 

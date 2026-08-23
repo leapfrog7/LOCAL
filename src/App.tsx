@@ -26,8 +26,8 @@ import { backgroundProcessingService } from './services/backgroundProcessingServ
 import { backupService } from './services/backupService'
 import { appLockService } from './services/appLockService'
 import { pdfImportService } from './services/pdfImportService'
-import { combineDocuments, extractPages } from './services/documentOperationsService'
-import { CombineDocumentsSheet } from './features/library/components/CombineDocumentsSheet'
+import { analyseDocumentPages, combineDocuments, extractPages, insertDocumentPages, removeDocumentPages, reorderDocumentPages } from './services/documentOperationsService'
+import { exportOcrText } from './services/textExportService'
 import { PageExtractSheet } from './features/viewer/components/PageExtractSheet'
 import { CompressionSheet } from './features/viewer/components/CompressionSheet'
 import { TagEditorSheet } from './features/viewer/components/TagEditorSheet'
@@ -35,15 +35,19 @@ import { BulkActionBar, BulkOrganizeSheet, type BulkEditMode } from './features/
 import { StorageSecurityPanel } from './features/settings/components/StorageSecurityPanel'
 import { screenSecurityService } from './services/screenSecurityService'
 import { privateStorageService } from './services/privateStorageService'
+import { folderService } from './services/folderService'
+import { ActionsScreen } from './features/actions/ActionsScreen'
+import type { ActionSaveMode } from './features/actions/ActionsScreen'
+import packageMetadata from '../package.json'
 
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
 const statusLabel = (doc: VaultDocument) => {
-  if (doc.status === 'indexed') return 'Searchable'
+  if (doc.status === 'indexed') return doc.pages.some(page => page.ocrText.trim() || page.barcodes?.length) ? 'Searchable' : 'No searchable text found'
   if (doc.status === 'error') { if (doc.processingStage === 'pdf') return 'Searchable PDF needs retry'; const failed = doc.pages.filter(page => page.ocrState === 'error').length; return `${failed || 1} ${failed === 1 ? 'page needs' : 'pages need'} OCR retry` }
   if (doc.processingStage === 'pdf') return 'Creating searchable PDF'
   if (doc.processingStage === 'indexing') return 'Indexing document'
   const done = doc.pages.filter(page => page.ocrState === 'complete').length
-  return done ? `Indexing ${done} of ${doc.pages.length}` : 'Preparing searchable text'
+  return done ? `Reading text · ${done} of ${doc.pages.length} pages` : `Preparing text · 0 of ${doc.pages.length} pages`
 }
 
 function App() {
@@ -57,13 +61,41 @@ function App() {
   const [lockState, setLockState] = useState<'checking' | 'locked' | 'unlocked'>('checking')
   const hiddenAt = useRef(0)
   const unlocking = useRef(false)
+  const privateViewerId = useRef<string | undefined>(undefined)
+  const sessionCleanup = useRef<Promise<void>>(Promise.resolve())
+
+  const updateDocument = useCallback((updated: VaultDocument) => { setDocuments(current => current.map(item => item.id === updated.id ? { ...updated } : item)); setSearchResults(current => current.map(result => result.document.id === updated.id ? { ...result, document: { ...updated } } : result)) }, [])
 
   useEffect(() => { void privateStorageService.clearAllSessions() }, [])
-  const unlock = useCallback(async () => { if (unlocking.current) return; unlocking.current = true; try { await appLockService.authenticate(); setLockState('unlocked') } catch { setLockState('locked') } finally { unlocking.current = false } }, [])
+  const unlock = useCallback(async () => {
+    if (unlocking.current) return
+    unlocking.current = true
+    try {
+      await appLockService.authenticate()
+      await sessionCleanup.current
+      const documentId = privateViewerId.current
+      if (documentId) {
+        const revealed = await documentsRepository.reveal(documentId)
+        if (!revealed) throw new Error('The private document is no longer available.')
+        updateDocument(revealed)
+      }
+      setLockState('unlocked')
+    } catch {
+      setLockState('locked')
+    } finally {
+      unlocking.current = false
+    }
+  }, [updateDocument])
   useEffect(() => { if (!appLockService.enabled()) setLockState('unlocked'); else void unlock() }, [unlock])
   useEffect(() => {
     const protect = () => {
-      if (document.visibilityState === 'hidden') hiddenAt.current = Date.now()
+      if (document.visibilityState === 'hidden') {
+        hiddenAt.current = Date.now()
+        if (privateViewerId.current) {
+          setLockState('locked')
+          sessionCleanup.current = privateStorageService.clearAllSessions()
+        }
+      }
       else if (appLockService.enabled() && hiddenAt.current && Date.now() - hiddenAt.current > 30_000) setLockState('locked')
     }
     document.addEventListener('visibilitychange', protect)
@@ -77,7 +109,6 @@ function App() {
   }
   useEffect(() => { setLoading(true); void refresh() }, [deferredQuery, searchFilter])
 
-  const updateDocument = useCallback((updated: VaultDocument) => { setDocuments(current => current.map(item => item.id === updated.id ? { ...updated } : item)); setSearchResults(current => current.map(result => result.document.id === updated.id ? { ...result, document: { ...updated } } : result)) }, [])
   useEffect(() => {
     void resumePendingProcessing(updateDocument)
     const resume = () => { if (document.visibilityState === 'visible') void resumePendingProcessing(updateDocument) }
@@ -118,8 +149,56 @@ function App() {
     await saveNewDocument({ id: crypto.randomUUID(), title: imported.title, titleSource: 'manual', folder: 'Unfiled', createdAt: now, updatedAt: now, status: 'ocr_pending', processingStage: 'ocr', pages: imported.pages, tags: [] })
   }
   const combineSelectedDocuments = async (selected: VaultDocument[]) => {
+    await withVisibleDocuments(selected, async visible => saveNewDocument(await combineDocuments(visible)))
+  }
+  const actionResult = async (result: VaultDocument, target: VaultDocument, saveMode: ActionSaveMode) => {
+    if (saveMode === 'copy') return saveNewDocument(result)
+    const oldPaths = [...new Set([...target.pages.flatMap(page => [page.imagePath, page.originalImagePath, page.thumbnailPath, page.ocrImagePath]), target.pdfPath].filter((path): path is string => Boolean(path)))]
+    const replacement: VaultDocument = {
+      ...result,
+      id: target.id,
+      title: target.title,
+      titleSource: target.titleSource,
+      folder: target.folder,
+      tags: [...target.tags],
+      createdAt: target.createdAt,
+      updatedAt: new Date().toISOString(),
+      pdfPath: undefined,
+      pdfGeneratedAt: undefined,
+      isPrivate: Boolean(target.isPrivate || result.isPrivate),
+    }
+    await documentsRepository.save(replacement)
+    const currentPaths = new Set([...replacement.pages.flatMap(page => [page.imagePath, page.originalImagePath, page.thumbnailPath, page.ocrImagePath]), replacement.pdfPath].filter(Boolean))
+    await Promise.all(oldPaths.filter(path => !currentPaths.has(path)).map(path => documentStorageService.removeFile(path)))
+    updateDocument(replacement); open({ name: 'viewer', id: replacement.id })
+    window.setTimeout(() => void processDocument(replacement.id, updateDocument).catch(error => console.error('[processing] Replacement processing failed', error)), 0)
+  }
+  const withVisibleDocuments = async <T,>(selected: VaultDocument[], action: (documents: VaultDocument[]) => Promise<T>) => {
     if (selected.some(document => document.isPrivate)) await appLockService.authenticate()
-    await saveNewDocument(await combineDocuments(selected))
+    const visible: VaultDocument[] = [], sessions: string[] = []
+    try {
+      for (const document of selected) {
+        const ready = document.isPrivate ? await documentsRepository.reveal(document.id) : document
+        if (!ready) throw new Error('A selected document is no longer available.')
+        visible.push(ready)
+        if (ready.privateSessionId) sessions.push(ready.privateSessionId)
+      }
+      return await action(visible)
+    } finally { await Promise.all(sessions.map(session => privateStorageService.clearSession(session))) }
+  }
+  const extractFromActions = async (document: VaultDocument, indexes: number[]) => withVisibleDocuments([document], async ([visible]) => saveNewDocument(await extractPages(visible, indexes)))
+  const reorderFromActions = async (document: VaultDocument, indexes: number[], saveMode: ActionSaveMode) => withVisibleDocuments([document], async ([visible]) => actionResult(await reorderDocumentPages(visible, indexes), document, saveMode))
+  const compressFromActions = async (document: VaultDocument, level: PdfCompressionLevel) => withVisibleDocuments([document], async ([visible]) => { await downloadCompressedPdf(visible, level) })
+  const insertFromActions = async (target: VaultDocument, source: VaultDocument, indexes: number[], at: number, saveMode: ActionSaveMode) => withVisibleDocuments([target, source], async ([visibleTarget, visibleSource]) => actionResult(await insertDocumentPages(visibleTarget, visibleSource, indexes, at), target, saveMode))
+  const cleanFromActions = async (document: VaultDocument, indexes: number[], saveMode: ActionSaveMode) => withVisibleDocuments([document], async ([visible]) => actionResult(await removeDocumentPages(visible, indexes), document, saveMode))
+  const analyseFromActions = async (document: VaultDocument) => withVisibleDocuments([document], async ([visible]) => analyseDocumentPages(visible))
+  const exportTextFromActions = async (document: VaultDocument, format: 'txt' | 'md') => withVisibleDocuments([document], async ([visible]) => exportOcrText(visible, format))
+  const renameFromActions = async (selected: VaultDocument[], template: string) => {
+    if (selected.some(document => document.isPrivate)) await appLockService.authenticate()
+    const date = new Date().toISOString().slice(0, 10)
+    const updated = selected.map((document, index) => ({ ...document, title: template.replaceAll('{title}', document.title).replaceAll('{n}', String(index + 1).padStart(2, '0')).replaceAll('{date}', date).replaceAll('{type}', document.smartMetadata?.documentType?.replaceAll('_', ' ') || 'document').trim(), titleSource: 'manual' as const, updatedAt: new Date().toISOString() }))
+    await Promise.all(updated.map(document => documentsRepository.save(document)))
+    const byId = new Map(updated.map(document => [document.id, document])); setDocuments(current => current.map(document => byId.get(document.id) ?? document))
   }
   const bulkUpdateDocuments = async (ids: string[], action: { type: 'move' | 'tag' | 'privacy'; value: string | boolean }) => {
     const selectedIds = new Set(ids)
@@ -150,6 +229,7 @@ function App() {
 
   if (screen.name === 'viewer') {
     const document = documents.find(item => item.id === screen.id)
+    privateViewerId.current = document?.isPrivate ? screen.id : undefined
     return document ? <Viewer document={document} initialPage={screen.page} initialQuery={screen.query} onBack={() => open({ name: 'home' })} onChange={async updated => {
       const previousSession = updated.privateSessionId
       await documentsRepository.save(updated)
@@ -161,29 +241,32 @@ function App() {
     }} onCreate={saveNewDocument} onDelete={async () => { await documentsRepository.remove(screen.id); await refresh(); open({ name: 'home' }) }} /> : <EmptyLoading />
   }
 
+  privateViewerId.current = undefined
+
   return <div className="app-shell">
     <main className="content">
-      {screen.name === 'home' && <Library documents={searchResults.map(result => result.document)} searchResults={searchResults} query={query} setQuery={setQuery} searchFilter={searchFilter} setSearchFilter={setSearchFilter} loading={loading} onScan={() => open({ name: 'capture' })} onImport={importPdf} onCombine={combineSelectedDocuments} onBulkUpdate={bulkUpdateDocuments} onBulkDelete={bulkDeleteDocuments} onOpen={(id, page) => void openDocument(id, page, parseAdvancedQuery(query).text)} />}
-      {screen.name === 'folders' && <Folders documents={documents} onOpen={id => void openDocument(id)} />}
-      {screen.name === 'settings' && <SettingsScreen onOpenScannerLab={() => open({ name: 'scanner-lab' })} />}
+      {screen.name === 'home' && <Library documents={searchResults.map(result => result.document)} searchResults={searchResults} query={query} setQuery={setQuery} searchFilter={searchFilter} setSearchFilter={setSearchFilter} loading={loading} onScan={() => open({ name: 'capture' })} onImport={importPdf} onBulkUpdate={bulkUpdateDocuments} onBulkDelete={bulkDeleteDocuments} onOpen={(id, page) => void openDocument(id, page, parseAdvancedQuery(query).text)} />}
+      {screen.name === 'folders' && <Folders documents={documents} onOpen={id => void openDocument(id)} onChange={refresh} />}
+      {screen.name === 'actions' && <ActionsScreen documents={documents} onCombine={combineSelectedDocuments} onExtract={extractFromActions} onReorder={reorderFromActions} onCompress={compressFromActions} onInsert={insertFromActions} onClean={cleanFromActions} onAnalyse={analyseFromActions} onRename={renameFromActions} onExportText={exportTextFromActions} />}
+      {screen.name === 'settings' && <SettingsScreen />}
     </main>
     <nav className="bottom-nav" aria-label="Main navigation">
       <NavButton active={screen.name === 'home'} icon={<Home />} label="Library" onClick={() => open({ name: 'home' })} />
       <NavButton active={screen.name === 'folders'} icon={<Folder />} label="Folders" onClick={() => open({ name: 'folders' })} />
       <button className="nav-tab scan-tab" onClick={() => open({ name: 'capture' })} aria-label="Scan document"><span className="nav-icon"><ScanLine /></span><span className="nav-label">Scan</span></button>
+      <NavButton active={screen.name === 'actions'} icon={<Files />} label="Actions" onClick={() => open({ name: 'actions' })} />
       <NavButton active={screen.name === 'settings'} icon={<Settings />} label="Settings" onClick={() => open({ name: 'settings' })} />
     </nav>
   </div>
 }
 
 const SEARCH_FILTERS: { id: SmartSearchFilter; label: string }[] = [{ id: 'all', label: 'All' }, { id: 'this_month', label: 'This month' }, { id: 'bills', label: 'Bills' }, { id: 'invoices', label: 'Invoices' }, { id: 'receipts', label: 'Receipts' }, { id: 'prescriptions', label: 'Prescriptions' }, { id: 'statements', label: 'Statements' }, { id: 'needs_attention', label: 'Needs attention' }]
-function Library({ documents, searchResults, query, setQuery, searchFilter, setSearchFilter, loading, onScan, onImport, onCombine, onBulkUpdate, onBulkDelete, onOpen }: { documents: VaultDocument[]; searchResults: DocumentSearchResult[]; query: string; setQuery: (value: string) => void; searchFilter: SmartSearchFilter; setSearchFilter: (value: SmartSearchFilter) => void; loading: boolean; onScan: () => void; onImport: () => Promise<void>; onCombine: (documents: VaultDocument[]) => Promise<void>; onBulkUpdate: (ids: string[], action: { type: 'move' | 'tag' | 'privacy'; value: string | boolean }) => Promise<void>; onBulkDelete: (ids: string[]) => Promise<void>; onOpen: (id: string, page?: number) => void }) {
+function Library({ documents, searchResults, query, setQuery, searchFilter, setSearchFilter, loading, onScan, onImport, onBulkUpdate, onBulkDelete, onOpen }: { documents: VaultDocument[]; searchResults: DocumentSearchResult[]; query: string; setQuery: (value: string) => void; searchFilter: SmartSearchFilter; setSearchFilter: (value: SmartSearchFilter) => void; loading: boolean; onScan: () => void; onImport: () => Promise<void>; onBulkUpdate: (ids: string[], action: { type: 'move' | 'tag' | 'privacy'; value: string | boolean }) => Promise<void>; onBulkDelete: (ids: string[]) => Promise<void>; onOpen: (id: string, page?: number) => void }) {
   const resultsById = useMemo(() => new Map(searchResults.map(result => [result.document.id, result])), [searchResults])
   const highlightQuery = useMemo(() => parseAdvancedQuery(query).text, [query])
-  const [importing, setImporting] = useState(false), [importError, setImportError] = useState(''), [combining, setCombining] = useState(false)
+  const [importing, setImporting] = useState(false), [importError, setImportError] = useState('')
   const [selecting, setSelecting] = useState(false), [selectedIds, setSelectedIds] = useState<string[]>([]), [bulkMode, setBulkMode] = useState<BulkEditMode | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false), [bulkError, setBulkError] = useState(''), [searchHelp, setSearchHelp] = useState(false)
-  const closeCombine = useCallback(() => setCombining(false), [])
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const selectedDocuments = useMemo(() => documents.filter(document => selectedIdSet.has(document.id)), [documents, selectedIdSet])
   const clearSelection = useCallback(() => { setSelecting(false); setSelectedIds([]); setBulkMode(null); setBulkError('') }, [])
@@ -219,11 +302,10 @@ function Library({ documents, searchResults, query, setQuery, searchFilter, setS
     {searchHelp ? <aside className="search-help"><strong>Advanced search</strong><span>Combine normal words with filters:</span><div>{['type:invoice', 'folder:"Tax records"', 'tag:important', 'amount:>5000', 'after:2026-01', 'private:true'].map(example => <button key={example} onClick={() => setQuery(normaliseQuery(`${query} ${example}`))}>{example}</button>)}</div></aside> : null}
     <div className="smart-filter-strip" aria-label="Document filters">{SEARCH_FILTERS.map(filter => <button key={filter.id} className={searchFilter === filter.id ? 'active' : ''} aria-pressed={searchFilter === filter.id} onClick={() => setSearchFilter(filter.id)}>{filter.label}</button>)}</div>
     <section className="section-block">
-      <div className="section-heading"><div><span>{selecting ? `${selectedIds.length} selected` : query || searchFilter !== 'all' ? 'Matching documents' : 'Recent documents'}</span><small>{documents.length} {documents.length === 1 ? 'document' : 'documents'}</small></div><div className="section-tools">{selecting ? <button onClick={clearSelection}>Cancel</button> : <>{searchFilter !== 'all' ? <button onClick={() => setSearchFilter('all')}>Clear filter</button> : null}{documents.length >= 2 ? <button onClick={() => setCombining(true)}><Files /> Combine</button> : null}{documents.length ? <button onClick={() => setSelecting(true)}><Check /> Select</button> : null}</>}</div></div>
+      <div className="section-heading"><div><span>{selecting ? `${selectedIds.length} selected` : query || searchFilter !== 'all' ? 'Matching documents' : 'Recent documents'}</span><small>{documents.length} {documents.length === 1 ? 'document' : 'documents'}</small></div><div className="section-tools">{selecting ? <button onClick={clearSelection}>Cancel</button> : <>{searchFilter !== 'all' ? <button onClick={() => setSearchFilter('all')}>Clear filter</button> : null}{documents.length ? <button onClick={() => setSelecting(true)}><Check /> Select</button> : null}</>}</div></div>
       {loading ? <EmptyLoading /> : documents.length ? <div className={`document-list${selecting ? ' selecting' : ''}`}>{documents.map(document => { const match = resultsById.get(document.id)?.pageMatches[0]; return <DocumentRow key={document.id} document={document} match={match} query={highlightQuery} selecting={selecting} selected={selectedIdSet.has(document.id)} onClick={() => selecting ? toggleSelected(document.id) : onOpen(document.id, match?.pageIndex)} /> })}</div> : <EmptyLibrary onScan={onScan} searching={Boolean(query || searchFilter !== 'all')} />}
     </section>
     <div className="privacy-note"><LockKeyhole size={18} /><div><strong>Private by design</strong><span>Your files and searches stay entirely on this device.</span></div></div>
-    {combining && <CombineDocumentsSheet documents={documents} onClose={closeCombine} onCombine={onCombine} />}
     {selecting && selectedIds.length > 0 ? <BulkActionBar count={selectedIds.length} busy={bulkBusy} error={bulkError} allPrivate={selectedDocuments.every(document => document.isPrivate)} onMove={() => setBulkMode('move')} onTag={() => setBulkMode('tag')} onPrivacy={() => void applyBulk('privacy', !selectedDocuments.every(document => document.isPrivate))} onDelete={() => void deleteBulk()} onCancel={clearSelection} /> : null}
     {bulkMode ? <BulkOrganizeSheet mode={bulkMode} count={selectedIds.length} busy={bulkBusy} error={bulkError} onClose={() => setBulkMode(null)} onApply={value => void applyBulk(bulkMode, value)} /> : null}
   </>
@@ -258,10 +340,12 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
   const [saving, setSaving] = useState(false)
   const [captureError, setCaptureError] = useState('')
   const [folder, setFolder] = useState('Unfiled')
+  const [folderOptions, setFolderOptions] = useState(['Unfiled'])
   const [cameraOpen, setCameraOpen] = useState(true)
   const [draggingPageId, setDraggingPageId] = useState<string | null>(null)
   const draggedPageIdRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => { void documentsRepository.list().then(documents => folderService.list(documents)).then(setFolderOptions).catch(() => setFolderOptions(['Unfiled'])) }, [])
   const addFiles = async (files: FileList | null) => {
     if (!files?.length) return
     setProcessing(true); setCaptureError('')
@@ -377,7 +461,7 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
       <button className="primary-button" onClick={() => setCameraOpen(true)}><Camera /> Open LOCAL camera</button>
       <button className="secondary-button" onClick={() => inputRef.current?.click()}><Upload /> Import photos</button>
     </section> : <>
-      <section className="scan-review-heading"><div><strong>Review your scan</strong><span>{pages.length > 1 ? 'Auto-enhanced · drag handles to reorder' : 'Auto-enhanced · tap to refine borders'}</span></div><label>Folder<select value={folder} onChange={event => setFolder(event.target.value)}><option>Unfiled</option><option>Office</option><option>Personal</option><option>Receipts</option><option>Legal</option></select></label></section>
+      <section className="scan-review-heading"><div><strong>Review your scan</strong><span>{pages.length > 1 ? 'Auto-enhanced · drag handles to reorder' : 'Auto-enhanced · tap to refine borders'}</span></div><label>Folder<select value={folder} onChange={event => setFolder(event.target.value)}>{folderOptions.map(option => <option key={option}>{option}</option>)}</select></label></section>
       {selectedPage ? <section className="scan-review"><button className="scan-review-preview" onClick={() => editSelected('crop')} aria-label={`Adjust page ${selectedIndex + 1}`}><img src={selectedPage.imageUrl} alt={`Page ${selectedIndex + 1}`} style={{ transform: `rotate(${selectedPage.rotation}deg)` }} />{selectedPage.processingState === 'needs_review' ? <span>Check borders</span> : null}</button><div className="review-order"><button onClick={() => movePage(selectedIndex, -1)} disabled={selectedIndex <= 0} aria-label="Move page earlier"><ArrowLeft /></button><span>Page {selectedIndex + 1} of {pages.length}</span><button onClick={() => movePage(selectedIndex, 1)} disabled={selectedIndex >= pages.length - 1} aria-label="Move page later"><ChevronRight /></button></div></section> : null}
       <section className="review-thumbnails" aria-label="Captured pages">{pages.map((page, index) => <div key={page.id} data-page-id={page.id} className={`review-thumbnail${page.id === selectedPage?.id ? ' active' : ''}${page.id === draggingPageId ? ' dragging' : ''}`}><button onClick={() => setSelectedPageId(page.id)} aria-label={`Open page ${index + 1}`}><img src={page.thumbnailUrl || page.imageUrl} alt="" /><span>{index + 1}</span></button>{pages.length > 1 ? <span className="page-drag-handle" role="button" tabIndex={0} aria-label={`Reorder page ${index + 1}. Use left and right arrow keys, or drag.`} onKeyDown={event => reorderWithKeyboard(event, index)} onPointerDown={event => beginPageDrag(event, page.id)} onPointerMove={continuePageDrag} onPointerUp={endPageDrag} onPointerCancel={endPageDrag}><GripVertical /></span> : null}</div>)}</section>
       <nav className="scan-review-toolbar" aria-label="Page editing tools"><button disabled={processing} onClick={() => setCameraOpen(true)}><ImagePlus /><span>Add</span></button><button disabled={processing} onClick={() => editSelected('crop')}><Crop /><span>Crop</span></button><button disabled={processing} onClick={() => selectedPage && rotate(selectedPage.id)}><RotateCw /><span>Rotate</span></button><button disabled={processing} onClick={() => void enhanceAllPages()}><ScanLine /><span>Enhance all</span></button><button disabled={processing} className="danger" onClick={deleteSelected}><Trash2 /><span>Delete</span></button></nav>
@@ -532,7 +616,7 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
   if (editingPage && current) return <ScanPageEditor page={current} pageNumber={page + 1} initialMode="crop" onCancel={() => setEditingPage(false)} onSave={updated => { void saveEditedPage(updated) }} />
   return <div className="full-screen viewer-screen">
     <header className="top-bar"><button onClick={onBack} aria-label="Back"><ArrowLeft /></button><div>{editing ? <input className="title-edit" value={title} onChange={event => setTitle(event.target.value)} onBlur={saveTitle} onKeyDown={event => event.key === 'Enter' && saveTitle()} autoFocus /> : <><strong>{document.isPrivate && <Lock size={13} />} {document.title}</strong><span>{document.folder} · {document.pages.length} pages</span></>}</div><button onClick={() => setActionsOpen(true)} aria-label="More actions" aria-haspopup="dialog"><MoreHorizontal /></button></header>
-    <div className={`processing-banner ${document.status === 'error' ? 'has-error' : ''}`}><Clock3 size={17} /><span>{statusLabel(document)}</span>{document.status === 'indexed' && <Check size={17} />}{(document.status === 'ocr_pending' || document.status === 'ocr_processing') && <button disabled={jobAction === 'working'} onClick={() => { setJobAction('working'); void cancelProcessing(document.id, updated => { onChange(updated); setJobAction('idle') }) }}><PauseCircle /> Pause</button>}{(document.status === 'error' || document.status === 'saved') && (document.processingStage === 'pdf' || document.pages.some(item => item.ocrState !== 'complete')) && <button disabled={jobAction === 'working'} onClick={() => { setJobAction('working'); void retryProcessing(document.id, updated => { onChange(updated); if (updated.status === 'indexed' || updated.status === 'error') setJobAction('idle') }) }}><RefreshCw /> {document.processingStage === 'pdf' ? 'Retry PDF' : 'Retry OCR'}</button>}<button onClick={() => setSearchOpen(open => !open)}><Search /> Search text</button></div>
+    <div className={`processing-banner ${document.status === 'error' ? 'has-error' : ''} ${document.status === 'ocr_pending' || document.status === 'ocr_processing' ? 'working' : ''}`}><Clock3 size={17} /><span>{statusLabel(document)}</span>{document.status === 'indexed' && <Check size={17} />}{(document.status === 'ocr_pending' || document.status === 'ocr_processing') && <button disabled={jobAction === 'working'} onClick={() => { setJobAction('working'); void cancelProcessing(document.id, updated => { onChange(updated); setJobAction('idle') }) }}><PauseCircle /> Pause</button>}{(document.status === 'error' || document.status === 'saved') && (document.processingStage === 'pdf' || document.pages.some(item => item.ocrState !== 'complete')) && <button disabled={jobAction === 'working'} onClick={() => { setJobAction('working'); void retryProcessing(document.id, updated => { onChange(updated); if (updated.status === 'indexed' || updated.status === 'error') setJobAction('idle') }) }}><RefreshCw /> {document.processingStage === 'pdf' ? 'Retry PDF' : 'Retry OCR'}</button>}<button onClick={() => setSearchOpen(open => !open)}><Search /> Search text</button></div>
     {searchOpen && <div className="viewer-search"><Search /><input value={withinQuery} onChange={event => setWithinQuery(event.target.value)} placeholder="Search this document" aria-label="Search this document" autoFocus /><span>{withinQuery ? matches.length ? `${activeMatchIndex + 1}/${matches.length}` : '0' : ''}</span><button onClick={() => moveMatch(-1)} disabled={!matches.length} aria-label="Previous match"><ChevronUp /></button><button onClick={() => moveMatch(1)} disabled={!matches.length} aria-label="Next match"><ChevronDown /></button><button onClick={() => { setWithinQuery(''); setSearchOpen(false) }} aria-label="Close search"><X /></button></div>}
     {document.tags.length > 0 && <div className="viewer-tags" aria-label="Document tags">{document.tags.map(tag => <span key={tag}><Tag />{tag}</span>)}</div>}
     {detectedCodes.length > 0 && <div className="code-index-banner"><ScanLine /><strong>{detectedCodes.length} {detectedCodes.length === 1 ? 'code' : 'codes'} indexed</strong><span>{detectedCodes[0].displayValue || detectedCodes[0].rawValue}</span></div>}
@@ -580,19 +664,25 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
   </div>
 }
 
-function Folders({ documents, onOpen }: { documents: VaultDocument[]; onOpen: (id: string) => void }) {
-  const grouped = useMemo(() => Object.entries(documents.reduce<Record<string, VaultDocument[]>>((folders, document) => {
-    ;(folders[document.folder] ??= []).push(document)
-    return folders
-  }, {})), [documents])
+function Folders({ documents, onOpen, onChange }: { documents: VaultDocument[]; onOpen: (id: string) => void; onChange: () => Promise<void> }) {
+  const [folders, setFolders] = useState<string[]>([])
   const [selected, setSelected] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [name, setName] = useState('')
+  const [error, setError] = useState('')
+  useEffect(() => { void folderService.list(documents).then(setFolders).catch(() => setError('Could not load folders.')) }, [documents])
   const visible = selected ? documents.filter(document => document.folder === selected) : []
-  return <><PageHeader icon={<FolderOpen />} title="Folders" subtitle="Keep related papers together" />{selected ? <section className="section-block"><button className="inline-back" onClick={() => setSelected(null)}><ArrowLeft /> All folders</button><div className="section-heading"><div><span>{selected}</span><small>{visible.length} documents</small></div></div><div className="document-list">{visible.map(document => <DocumentRow key={document.id} document={document} onClick={() => onOpen(document.id)} />)}</div></section> : grouped.length ? <div className="folder-grid">{grouped.map(([name, docs]) => <button key={name} onClick={() => setSelected(name)}><Folder /><strong>{name}</strong><span>{docs.length} documents</span><ChevronRight /></button>)}</div> : <div className="empty-state"><div><Folder /></div><h3>No folders yet</h3><p>Folders appear here when you organise a scanned document.</p></div>}</>
+  const create = async () => { try { const created = await folderService.create(name, documents); setFolders(await folderService.list(documents)); setName(''); setCreating(false); setSelected(created); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not create the folder.') } }
+  const rename = async () => { if (!selected) return; const next = prompt('Rename folder', selected); if (next == null) return; try { const renamed = await folderService.rename(selected, next, documents); await onChange(); setFolders(await folderService.list(documents.map(document => document.folder === selected ? { ...document, folder: renamed } : document))); setSelected(renamed); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not rename the folder.') } }
+  const remove = async () => { if (!selected || !confirm(`Delete “${selected}”? Its ${visible.length} document${visible.length === 1 ? '' : 's'} will be moved to Unfiled.`)) return; try { await folderService.remove(selected, documents); setSelected(null); await onChange(); setFolders(await folderService.list(documents.map(document => document.folder === selected ? { ...document, folder: 'Unfiled' } : document))); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not delete the folder.') } }
+  return <><PageHeader icon={<FolderOpen />} title="Folders" subtitle="Keep related papers together" />{selected ? <section className="section-block"><button className="inline-back" onClick={() => setSelected(null)}><ArrowLeft /> All folders</button><div className="folder-title-row"><div><strong>{selected}</strong><small>{visible.length} documents</small></div>{selected !== 'Unfiled' && <div><button onClick={() => void rename()}><Pencil /> Rename</button><button className="danger" onClick={() => void remove()}><Trash2 /> Delete</button></div>}</div>{visible.length ? <div className="document-list">{visible.map(document => <DocumentRow key={document.id} document={document} onClick={() => onOpen(document.id)} />)}</div> : <div className="folder-empty"><Folder /><p>This folder is empty. Move documents here from their options menu.</p></div>}</section> : <><button className="create-folder-button" onClick={() => setCreating(true)}><FolderOpen /> Create folder</button>{creating && <form className="folder-create-form" onSubmit={event => { event.preventDefault(); void create() }}><label htmlFor="folder-name">Folder name</label><div><input id="folder-name" value={name} onChange={event => setName(event.target.value)} maxLength={48} autoFocus /><button disabled={!name.trim()}><Check /> Create</button><button type="button" onClick={() => { setCreating(false); setName(''); setError('') }}><X /></button></div></form>}<div className="folder-grid">{folders.map(folder => { const count = documents.filter(document => document.folder === folder).length; return <button key={folder} onClick={() => setSelected(folder)}><Folder /><strong>{folder}</strong><span>{count} document{count === 1 ? '' : 's'}</span><ChevronRight /></button> })}</div></>}{error && <p className="folder-error" role="alert">{error}</p>}</>
 }
 
-function SettingsScreen({ onOpenScannerLab }: { onOpenScannerLab: () => void }) {
-  const rows = [['Document storage', documentStorageService.usesNativeFiles() ? 'Private app files' : 'Browser test storage'], ['OCR processing', 'This device'], ['Search indexing', 'This device'], ['Cloud synchronisation', 'Not enabled'], ['Analytics', 'None']]
-  return <><PageHeader icon={<Settings />} title="Settings" subtitle="Privacy and local storage" /><section className="privacy-card"><div className="shield"><ShieldCheck /></div><div><h2>Private by design</h2><p>Documents stay on this device. OCR and search indexing run locally. No document data is uploaded.</p></div></section><StorageSecurityPanel /><AppProtectionPanel /><BackupPanel /><button className="scanner-lab-entry" onClick={onOpenScannerLab}><span><ScanLine /></span><div><strong>Scanner Lab</strong><small>Compare processing on a test document</small></div><ChevronRight /></button><section className="settings-list"><h3>Privacy status</h3>{rows.map(([label, value]) => <div key={label}><span>{label}</span><strong><i />{value}</strong></div>)}</section><section className="about-card"><span>LOCAL</span><small>Version 0.1.0</small><p>A quiet, private home for your important papers.</p></section></>
+function SettingsScreen() {
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [policyOpen, setPolicyOpen] = useState(false)
+  const rows = [['Document storage', documentStorageService.usesNativeFiles() ? 'Private app files' : 'Browser test storage'], ['OCR processing', 'This device'], ['Search indexing', 'This device'], ['Analytics', 'None']]
+  return <><PageHeader icon={<Settings />} title="Settings" subtitle="Privacy and local storage" /><section className="privacy-card"><div className="shield"><ShieldCheck /></div><div><h2>Private by design</h2><p>Documents stay on this device. OCR and search indexing run locally. LOCAL never uploads or synchronises your documents. Only an export or share action you choose sends a copy outside the app.</p></div></section><button className="usage-guide-entry" onClick={() => setGuideOpen(open => !open)} aria-expanded={guideOpen}><span><CircleHelp /></span><div><strong>How to use LOCAL well</strong><small>A quick private-document workflow</small></div>{guideOpen ? <ChevronUp /> : <ChevronDown />}</button>{guideOpen && <section className="usage-guide"><ol><li><strong>Scan or import</strong><span>Capture paper with automatic edges, or import an existing PDF.</span></li><li><strong>Review and organise</strong><span>Crop pages, use folders and tags, and let local OCR make everything searchable.</span></li><li><strong>Find it quickly</strong><span>Search words inside documents instead of browsing filenames and cloud drives.</span></li><li><strong>Protect what matters</strong><span>Make sensitive documents private; add a PDF password before exporting when needed.</span></li></ol><p><ShieldCheck /> Faster lookup without an account, subscription, upload delay or server copy.</p></section>}<StorageSecurityPanel /><AppProtectionPanel /><BackupPanel /><section className="settings-list"><h3>Privacy status</h3>{rows.map(([label, value]) => <div key={label}><span>{label}</span><strong><i />{value}</strong></div>)}</section><button className="usage-guide-entry" onClick={() => setPolicyOpen(open => !open)} aria-expanded={policyOpen}><span><ShieldCheck /></span><div><strong>Privacy policy</strong><small>What LOCAL accesses and stores</small></div>{policyOpen ? <ChevronUp /> : <ChevronDown />}</button>{policyOpen && <section className="usage-guide privacy-policy-summary"><p>LOCAL has no account, analytics, advertising, cloud storage or remote OCR. Documents, thumbnails, recognised text and search indexes remain in private app storage. Camera access is used only when you scan. Android may download ML Kit components through Google Play services. Files leave LOCAL only when you explicitly export, share or create an encrypted backup. Removing the app normally removes its private data.</p></section>}<section className="about-card"><span>LOCAL</span><small>Version {packageMetadata.version}</small><p>A quiet, private home for your important papers.</p></section></>
 }
 
 function AppProtectionPanel() {

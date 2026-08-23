@@ -60,3 +60,43 @@ export async function extractPages(document: VaultDocument, pageIndexes: number[
   if (pages.length === document.pages.length) throw new Error('Leave at least one page in the original document.')
   return derivedDocument(`${document.title} · Extracted pages`, pages, Boolean(document.isPrivate))
 }
+
+export async function reorderDocumentPages(document: VaultDocument, pageIndexes: number[]) {
+  if (pageIndexes.length !== document.pages.length || new Set(pageIndexes).size !== document.pages.length) throw new Error('Every page must appear exactly once.')
+  const pages = await copyDocumentPages(pageIndexes.map(index => document.pages[index]).filter(Boolean))
+  return derivedDocument(`${document.title} · Reordered`, pages, Boolean(document.isPrivate))
+}
+
+export async function insertDocumentPages(target: VaultDocument, source: VaultDocument, sourcePageIndexes: number[], insertionIndex: number) {
+  const selected = new Set(sourcePageIndexes)
+  const inserted = source.pages.filter((_, index) => selected.has(index))
+  if (!inserted.length) throw new Error('Choose at least one page to insert.')
+  const at = Math.max(0, Math.min(target.pages.length, insertionIndex))
+  const pages = await copyDocumentPages([...target.pages.slice(0, at), ...inserted, ...target.pages.slice(at)])
+  return { ...derivedDocument(`${target.title} · Pages inserted`, pages, Boolean(target.isPrivate || source.isPrivate)), folder: target.folder, tags: [...target.tags] }
+}
+
+export async function removeDocumentPages(document: VaultDocument, pageIndexes: number[]) {
+  const removed = new Set(pageIndexes)
+  if (!removed.size) throw new Error('Choose at least one blank or duplicate page to remove.')
+  const remaining = document.pages.filter((_, index) => !removed.has(index))
+  if (!remaining.length) throw new Error('A document must keep at least one page.')
+  const pages = await copyDocumentPages(remaining)
+  return { ...derivedDocument(`${document.title} · Cleaned`, pages, Boolean(document.isPrivate)), folder: document.folder, tags: [...document.tags] }
+}
+
+export type PageCleanupAnalysis = { blank: number[]; duplicates: number[] }
+export function analyseDocumentPages(document: VaultDocument): PageCleanupAnalysis {
+  const blank: number[] = [], duplicates: number[] = []
+  const fingerprints = new Map<string, number>()
+  document.pages.forEach((page, index) => {
+    const text = page.ocrText.replace(/\s+/g, ' ').trim().toLocaleLowerCase()
+    if (page.ocrState === 'complete' && !text) blank.push(index)
+    const fingerprint = text.length >= 20 ? text : ''
+    if (fingerprint) {
+      if (fingerprints.has(fingerprint)) duplicates.push(index)
+      else fingerprints.set(fingerprint, index)
+    }
+  })
+  return { blank, duplicates }
+}

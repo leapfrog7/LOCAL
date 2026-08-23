@@ -44,6 +44,16 @@ async function persistPage(documentId: string, page: DocumentPage): Promise<Docu
 export const documentStorageService = {
   usesNativeFiles: () => Capacitor.isNativePlatform(),
 
+  async size(document: VaultDocument) {
+    const paths = [...new Set([...document.pages.flatMap(page => [page.imagePath, page.originalImagePath, page.thumbnailPath, page.ocrImagePath]), document.pdfPath].filter((path): path is string => Boolean(path)))]
+    if (Capacitor.isNativePlatform()) {
+      const sizes = await Promise.all(paths.map(async path => { try { return Number((await Filesystem.stat({ path, directory: Directory.Data })).size || 0) } catch { return 0 } }))
+      return sizes.reduce((total, value) => total + value, 0)
+    }
+    const urls = [...new Set(document.pages.flatMap(page => [page.imageUrl, page.originalImageUrl, page.thumbnailUrl, page.ocrImageUrl]).filter((url): url is string => Boolean(url?.startsWith('data:'))))]
+    return urls.reduce((total, url) => total + Math.floor(base64FromDataUrl(url).length * .75), 0)
+  },
+
   async persist(document: VaultDocument): Promise<VaultDocument> {
     if (!Capacitor.isNativePlatform()) return document
     const pages: DocumentPage[] = []

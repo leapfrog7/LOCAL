@@ -16,6 +16,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import androidx.core.content.FileProvider;
+import androidx.annotation.RequiresApi;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -23,6 +24,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.UUID;
+import java.util.Locale;
 
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader;
 import com.tom_roush.pdfbox.pdmodel.PDDocument;
@@ -78,7 +80,7 @@ public class PdfDownloadPlugin extends Plugin {
 
             JSObject result = new JSObject();
             result.put("algorithm", "AES-256");
-            Log.i(TAG, "Password protection applied to private PDF " + sourcePath);
+            Log.i(TAG, "Password protection applied.");
             call.resolve(result);
         } catch (Exception error) {
             if (temporary != null && temporary.exists()) temporary.delete();
@@ -90,7 +92,7 @@ public class PdfDownloadPlugin extends Plugin {
     public void savePdf(PluginCall call) {
         String sourcePath = call.getString("sourcePath");
         String filename = call.getString("filename");
-        if (sourcePath == null || filename == null || !filename.toLowerCase().endsWith(".pdf")) {
+        if (sourcePath == null || filename == null || !filename.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
             call.reject("A valid PDF filename and source are required.");
             return;
         }
@@ -122,7 +124,7 @@ public class PdfDownloadPlugin extends Plugin {
             JSObject result = new JSObject();
             result.put("location", location);
             result.put("uri", lastSavedPdf.toString());
-            Log.i(TAG, "PDF saved to " + location);
+            Log.i(TAG, "PDF export completed.");
             call.resolve(result);
         } catch (Exception error) {
             call.reject("Could not save the PDF to Downloads.", error);
@@ -140,7 +142,7 @@ public class PdfDownloadPlugin extends Plugin {
             view.setDataAndType(lastSavedPdf, "application/pdf");
             view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             Intent chooser = Intent.createChooser(view, "Open PDF with");
-            Log.i(TAG, "Opening PDF chooser inside LOCAL task for " + lastSavedPdf);
+            Log.i(TAG, "Opening PDF chooser inside LOCAL task.");
             getActivity().startActivity(chooser);
             call.resolve();
         } catch (Exception error) {
@@ -148,6 +150,7 @@ public class PdfDownloadPlugin extends Plugin {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.Q)
     private SavedPdf saveWithMediaStore(File source, String filename) throws Exception {
         ContentResolver resolver = getContext().getContentResolver();
         ContentValues values = new ContentValues();

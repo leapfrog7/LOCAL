@@ -13,6 +13,7 @@ import androidx.work.WorkInfo;
 import androidx.work.WorkManager;
 
 import com.getcapacitor.JSObject;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
@@ -39,7 +40,14 @@ public class BackgroundProcessingPlugin extends Plugin {
             return;
         }
         boolean replace = call.getBoolean("replace", false);
-        NativeOcrWorker.deleteResult(getContext(), documentId);
+        try {
+            JSArray pages = call.getArray("pages", new JSArray());
+            NativeOcrWorker.writeJobManifest(getContext(), documentId, pages);
+            NativeOcrWorker.deleteResult(getContext(), documentId);
+        } catch (Exception error) {
+            call.reject("LOCAL could not prepare background OCR.", error);
+            return;
+        }
         Data input = new Data.Builder().putString(NativeOcrWorker.DOCUMENT_ID, documentId).build();
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(NativeOcrWorker.class)
             .setInputData(input)
@@ -64,6 +72,7 @@ public class BackgroundProcessingPlugin extends Plugin {
         }
         WorkManager.getInstance(getContext()).cancelUniqueWork(workName(documentId));
         NativeOcrWorker.deleteResult(getContext(), documentId);
+        NativeOcrWorker.deleteJobManifest(getContext(), documentId);
         call.resolve(new JSObject().put("state", "cancelled"));
     }
 

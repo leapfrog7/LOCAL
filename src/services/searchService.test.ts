@@ -30,10 +30,18 @@ describe('pageMatches', () => {
 
   it('filters using locally extracted document metadata', () => {
     const source = document(['amount due'])
+    source.createdAt = '2026-08-20T10:00:00.000Z'
     source.smartMetadata = { documentType: 'electricity_bill', documentDate: '2026-08-12' }
     expect(matchesSmartFilter(source, 'bills')).toBe(true)
     expect(matchesSmartFilter(source, 'receipts')).toBe(false)
     expect(matchesSmartFilter(source, 'this_month', new Date('2026-08-22'))).toBe(true)
+  })
+
+  it('uses date added for this month even when the printed document date is old', () => {
+    const source = document(['old invoice scanned today'])
+    source.createdAt = '2026-08-20T10:00:00.000Z'
+    source.smartMetadata = { documentType: 'invoice', documentDate: '2024-01-15' }
+    expect(matchesSmartFilter(source, 'this_month', new Date('2026-08-23T12:00:00+05:30'))).toBe(true)
   })
 
   it('ranks a title match above a body-only match', () => {

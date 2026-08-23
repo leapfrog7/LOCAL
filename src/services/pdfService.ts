@@ -129,7 +129,7 @@ export async function downloadPdf(vaultDocument: VaultDocument): Promise<VaultDo
   }
   const ready = await ensurePersistedPdf(vaultDocument)
   const result = await nativePdfDownload.savePdf({ sourcePath: ready.privatePdfPath ?? ready.pdfPath!, filename })
-  console.info('[pdf] saved to Android Downloads', { documentId: vaultDocument.id, location: result.location })
+  console.info('[pdf] saved to Android Downloads')
   return ready
 }
 
@@ -140,7 +140,7 @@ export async function openDownloadedPdf() {
 
 export async function sharePdf(vaultDocument: VaultDocument): Promise<VaultDocument> {
   const filename = safeFilename(vaultDocument.title)
-  console.info('[pdf] share started', { documentId: vaultDocument.id, native: Capacitor.isNativePlatform(), hasPersistedPdf: Boolean(vaultDocument.pdfPath) })
+  console.info('[pdf] share started', { native: Capacitor.isNativePlatform(), hasPersistedPdf: Boolean(vaultDocument.pdfPath) })
   if (!Capacitor.isNativePlatform()) {
     const blob = await pdfService.create(vaultDocument)
     const file = new File([blob], filename, { type: 'application/pdf' })
@@ -150,9 +150,9 @@ export async function sharePdf(vaultDocument: VaultDocument): Promise<VaultDocum
   }
   const ready = await ensurePersistedPdf(vaultDocument)
   const uri = await documentStorageService.nativeUri(ready.privatePdfPath ?? ready.pdfPath!)
-  console.info('[pdf] opening Android share dialog', { documentId: vaultDocument.id, pdfPath: ready.pdfPath })
+  console.info('[pdf] opening Android share dialog')
   try { await Share.share({ title: filename, text: 'Scanned with LOCAL', files: [uri], dialogTitle: 'Share PDF' }) }
-  catch (error) { console.error('[pdf] Android share dialog failed', { documentId: vaultDocument.id, pdfPath: ready.pdfPath, error: error instanceof Error ? error.message : String(error) }); throw error }
-  console.info('[pdf] share completed', { documentId: vaultDocument.id })
+  catch (error) { console.error('[pdf] Android share dialog failed', { error: error instanceof Error ? error.message : String(error) }); throw error }
+  console.info('[pdf] share completed')
   return ready
 }

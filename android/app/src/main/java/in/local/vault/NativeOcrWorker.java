@@ -55,7 +55,7 @@ public class NativeOcrWorker extends Worker {
             Barcode.FORMAT_CODE_128, Barcode.FORMAT_CODE_39, Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8,
             Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E, Barcode.FORMAT_ITF, Barcode.FORMAT_CODABAR).build());
         try {
-            JSONObject metadata = new JSONObject(read(metadataFile(getApplicationContext(), documentId)));
+            JSONObject metadata = new JSONObject(read(jobManifestFile(getApplicationContext(), documentId)));
             JSONArray sourcePages = metadata.getJSONArray("pages");
             JSONArray completedPages = new JSONArray();
             JSONArray errors = new JSONArray();
@@ -79,13 +79,13 @@ public class NativeOcrWorker extends Worker {
             writeResult(documentId, state, completedPages, errors, errors.length() == 0 ? null : "One or more pages could not be recognized.", sourcePages.length(), sourcePages.length());
             return errors.length() == 0 ? Result.success() : Result.failure();
         } catch (Exception error) {
-            boolean retrying = getRunAttemptCount() < 2 && !isStopped();
-            try { writeResult(documentId, retrying ? "running" : "failed", new JSONArray(), new JSONArray(), safeMessage(error), 0, 0); }
+            try { writeResult(documentId, "failed", new JSONArray(), new JSONArray(), safeMessage(error), 0, 0); }
             catch (Exception ignored) {}
-            return retrying ? Result.retry() : Result.failure();
+            return Result.failure();
         } finally {
             recognizer.close();
             barcodeScanner.close();
+            deleteJobManifest(getApplicationContext(), documentId);
         }
     }
 
@@ -102,7 +102,6 @@ public class NativeOcrWorker extends Worker {
             InputImage image = InputImage.fromBitmap(bitmap, rotation);
             Text text = Tasks.await(recognizer.process(image));
             List<Barcode> barcodes = Tasks.await(barcodeScanner.process(image));
-            if (text.getText().trim().isEmpty() && barcodes.isEmpty()) throw new IllegalStateException("No readable text or code was detected on this page.");
             return mappedResult(page.optString("id"), text, barcodes, width, height);
         } finally {
             bitmap.recycle();
@@ -173,8 +172,17 @@ public class NativeOcrWorker extends Worker {
         setProgressAsync(new Data.Builder().putInt("completedPages", completed).putInt("totalPages", total).build());
     }
 
-    static File metadataFile(Context context, String documentId) {
-        return new File(new File(new File(context.getFilesDir(), "LOCAL/documents"), documentId), "metadata.json");
+    static File jobManifestFile(Context context, String documentId) {
+        return new File(new File(new File(context.getFilesDir(), "LOCAL/documents"), documentId), "native-ocr-job.json");
+    }
+
+    static void writeJobManifest(Context context, String documentId, JSONArray pages) throws Exception {
+        writeAtomically(jobManifestFile(context, documentId), new JSONObject().put("documentId", documentId).put("pages", pages).toString());
+    }
+
+    static void deleteJobManifest(Context context, String documentId) {
+        File manifest = jobManifestFile(context, documentId);
+        if (manifest.isFile()) manifest.delete();
     }
 
     static File resultFile(Context context, String documentId) {
@@ -202,7 +210,7 @@ public class NativeOcrWorker extends Worker {
         }
     }
 
-    private static void writeAtomically(File target, String content) throws Exception {
+    static void writeAtomically(File target, String content) throws Exception {
         File parent = target.getParentFile();
         if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) throw new IllegalStateException("The OCR result directory could not be created.");
         File temporary = new File(parent, target.getName() + ".tmp");
@@ -227,8 +235,13 @@ public class NativeOcrWorker extends Worker {
             if (codePoint >= 0x0900 && codePoint <= 0x097F) devanagari = true;
             index += Character.charCount(codePoint);
         }
-        if (latin && languages.stream().noneMatch(value -> value.toLowerCase().startsWith("en"))) languages.add("en");
-        if (devanagari && languages.stream().noneMatch(value -> value.toLowerCase().startsWith("hi"))) languages.add("hi");
+        if (latin && !hasLanguage(languages, "en")) languages.add("en");
+        if (devanagari && !hasLanguage(languages, "hi")) languages.add("hi");
+    }
+
+    private static boolean hasLanguage(Set<String> languages, String prefix) {
+        for (String value : languages) if (value.toLowerCase(Locale.ROOT).startsWith(prefix)) return true;
+        return false;
     }
 
     private static double clamp(double value, double minimum, double maximum) { return Math.max(minimum, Math.min(maximum, value)); }

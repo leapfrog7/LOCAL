@@ -19,6 +19,7 @@ import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions;
 
 import java.io.File;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Set;
 
 @CapacitorPlugin(name = "MlKitOcr")
@@ -127,7 +128,7 @@ public class MlKitOcrPlugin extends Plugin {
     }
 
     private static boolean hasLanguage(Set<String> languages, String prefix) {
-        for (String language : languages) if (language.toLowerCase().startsWith(prefix)) return true;
+        for (String language : languages) if (language.toLowerCase(Locale.ROOT).startsWith(prefix)) return true;
         return false;
     }
 

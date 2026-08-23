@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-path name="my_images" path="." />
-    <cache-path name="my_cache_images" path="." />
+    <!-- Android 9 and older save user-requested exports here. Never expose the
+         full shared-storage root through FileProvider. -->
+    <external-path name="local_downloads" path="Download/" />
+    <cache-path name="local_share_cache" path="." />
     <files-path name="local_documents" path="LOCAL/documents/" />
 </paths>
