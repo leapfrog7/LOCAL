@@ -18,13 +18,15 @@ function smoothGray(data: Uint8ClampedArray, width: number, height: number) {
 }
 
 function createEdges(gray: Float32Array, width: number, height: number) {
-  const edges = new Float32Array(width * height), values: number[] = []
+  const edges = new Float32Array(width * height), verticalBorders = new Float32Array(width * height), horizontalBorders = new Float32Array(width * height), values: number[] = []
   for (let y = 2; y < height - 2; y += 1) for (let x = 2; x < width - 2; x += 1) {
-    const i = y * width + x, strength = Math.hypot(gray[i + 1] - gray[i - 1], gray[i + width] - gray[i - width])
+    const i = y * width + x, horizontalGradient = Math.abs(gray[i + 1] - gray[i - 1]), verticalGradient = Math.abs(gray[i + width] - gray[i - width]), strength = Math.hypot(horizontalGradient, verticalGradient)
+    verticalBorders[i] = horizontalGradient
+    horizontalBorders[i] = verticalGradient
     edges[i] = strength; if (!(x % 2) && !(y % 2)) values.push(strength)
   }
   values.sort((a, b) => a - b)
-  return { edges, threshold: Math.max(12, values[Math.floor(values.length * .82)] || 12) }
+  return { edges, verticalBorders, horizontalBorders, threshold: Math.max(12, values[Math.floor(values.length * .82)] || 12) }
 }
 
 function extreme(points: Point[], score: (point: Point) => number, largest: boolean) {
@@ -49,22 +51,23 @@ function intersection(vertical: Line, horizontal: Line): Point {
   return { x, y: horizontal.slope * x + horizontal.intercept }
 }
 
-export function fitDocumentBoundary(edges: Float32Array, width: number, height: number, threshold: number, inset = .03): PageCorners | null {
+export function fitDocumentBoundary(edges: Float32Array, width: number, height: number, threshold: number, inset = .03, directions?: { verticalBorders: Float32Array; horizontalBorders: Float32Array }): PageCorners | null {
   const left: { independent: number; dependent: number; weight: number }[] = [], right: typeof left = [], top: typeof left = [], bottom: typeof left = []
+  const verticalEdges = directions?.verticalBorders ?? edges, horizontalEdges = directions?.horizontalBorders ?? edges, directionalThreshold = threshold * .68
   const xStart = Math.round(width * inset), xEnd = Math.round(width * (1 - inset)), yStart = Math.round(height * inset), yEnd = Math.round(height * (1 - inset))
   for (let y = yStart; y < yEnd; y += 2) {
     let lx = xStart, rx = xEnd - 1, ls = 0, rs = 0
-    for (let x = xStart; x < width * .48; x += 2) if (edges[y * width + x] > ls) { ls = edges[y * width + x]; lx = x }
-    for (let x = Math.round(width * .52); x < xEnd; x += 2) if (edges[y * width + x] > rs) { rs = edges[y * width + x]; rx = x }
-    if (ls >= threshold) left.push({ independent: y / height, dependent: lx / width, weight: Math.min(3, ls / threshold) })
-    if (rs >= threshold) right.push({ independent: y / height, dependent: rx / width, weight: Math.min(3, rs / threshold) })
+    for (let x = xStart; x < width * .48; x += 2) { const strength = verticalEdges[y * width + x], positionBias = 1 - .32 * (x - xStart) / Math.max(1, width * .48 - xStart); if (strength * positionBias > ls) { ls = strength * positionBias; lx = x } }
+    for (let x = Math.round(width * .52); x < xEnd; x += 2) { const strength = verticalEdges[y * width + x], positionBias = 1 - .32 * (xEnd - x) / Math.max(1, xEnd - width * .52); if (strength * positionBias > rs) { rs = strength * positionBias; rx = x } }
+    if (ls >= directionalThreshold) left.push({ independent: y / height, dependent: lx / width, weight: Math.min(3, ls / directionalThreshold) })
+    if (rs >= directionalThreshold) right.push({ independent: y / height, dependent: rx / width, weight: Math.min(3, rs / directionalThreshold) })
   }
   for (let x = xStart; x < xEnd; x += 2) {
     let ty = yStart, by = yEnd - 1, ts = 0, bs = 0
-    for (let y = yStart; y < height * .48; y += 2) if (edges[y * width + x] > ts) { ts = edges[y * width + x]; ty = y }
-    for (let y = Math.round(height * .52); y < yEnd; y += 2) if (edges[y * width + x] > bs) { bs = edges[y * width + x]; by = y }
-    if (ts >= threshold) top.push({ independent: x / width, dependent: ty / height, weight: Math.min(3, ts / threshold) })
-    if (bs >= threshold) bottom.push({ independent: x / width, dependent: by / height, weight: Math.min(3, bs / threshold) })
+    for (let y = yStart; y < height * .48; y += 2) { const strength = horizontalEdges[y * width + x], positionBias = 1 - .32 * (y - yStart) / Math.max(1, height * .48 - yStart); if (strength * positionBias > ts) { ts = strength * positionBias; ty = y } }
+    for (let y = Math.round(height * .52); y < yEnd; y += 2) { const strength = horizontalEdges[y * width + x], positionBias = 1 - .32 * (yEnd - y) / Math.max(1, yEnd - height * .52); if (strength * positionBias > bs) { bs = strength * positionBias; by = y } }
+    if (ts >= directionalThreshold) top.push({ independent: x / width, dependent: ty / height, weight: Math.min(3, ts / directionalThreshold) })
+    if (bs >= directionalThreshold) bottom.push({ independent: x / width, dependent: by / height, weight: Math.min(3, bs / directionalThreshold) })
   }
   const leftLine = regression(left), rightLine = regression(right), topLine = regression(top), bottomLine = regression(bottom)
   if (!leftLine || !rightLine || !topLine || !bottomLine) return null
@@ -95,7 +98,7 @@ function scoreCandidate(corners: PageCorners, edges: Float32Array, width: number
 export async function detectDocument(imageSource: string): Promise<DetectionResult> {
   const image = await loadImage(imageSource), { canvas, context } = createWorkingCanvas(image, 720)
   const gray = smoothGray(context.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height)
-  const { edges, threshold } = createEdges(gray, canvas.width, canvas.height), points: Point[] = []
+  const { edges, verticalBorders, horizontalBorders, threshold } = createEdges(gray, canvas.width, canvas.height), points: Point[] = []
   for (let y = 3; y < canvas.height - 3; y += 2) for (let x = 3; x < canvas.width - 3; x += 2) if (edges[y * canvas.width + x] >= threshold) points.push({ x: x / canvas.width, y: y / canvas.height })
   if (points.length < 80) return { corners: fallbackCorners, confidence: .2 }
   const candidates: PageCorners[] = []
@@ -103,7 +106,7 @@ export async function detectDocument(imageSource: string): Promise<DetectionResu
     const usable = points.filter(point => point.x > inset && point.y > inset && point.x < 1 - inset && point.y < 1 - inset)
     if (usable.length < 20) continue
     candidates.push({ topLeft: extreme(usable, p => p.x + p.y, false), topRight: extreme(usable, p => p.x - p.y, true), bottomRight: extreme(usable, p => p.x + p.y, true), bottomLeft: extreme(usable, p => p.x - p.y, false) })
-    const fitted = fitDocumentBoundary(edges, canvas.width, canvas.height, threshold, inset)
+    const fitted = fitDocumentBoundary(edges, canvas.width, canvas.height, threshold, inset, { verticalBorders, horizontalBorders })
     if (fitted) candidates.push(fitted)
   }
   const scored = candidates.map(corners => ({ corners, metrics: scoreCandidate(corners, edges, canvas.width, canvas.height, threshold) })).filter(item => item.metrics).sort((a, b) => b.metrics!.score - a.metrics!.score)

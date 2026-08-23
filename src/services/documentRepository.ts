@@ -91,7 +91,8 @@ export const documentsRepository: DocumentRepository = {
     const documents = await this.list()
     if (!terms.length) return documents
     return documents.filter(doc => {
-      const haystack = [doc.title, doc.folder, ...doc.tags, ...doc.pages.map(p => p.ocrText)].join(' ').toLocaleLowerCase()
+      const smart = doc.smartMetadata
+      const haystack = [doc.title, doc.folder, ...doc.tags, smart?.documentType?.replaceAll('_', ' '), smart?.organization, smart?.dateLabel, smart?.amount?.display, smart?.identifier?.value, ...doc.pages.flatMap(page => [page.ocrText, ...(page.barcodes ?? []).flatMap(code => [code.rawValue, code.displayValue])])].filter(Boolean).join(' ').toLocaleLowerCase()
       return terms.every(term => haystack.includes(term))
     })
   },

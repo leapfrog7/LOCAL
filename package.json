@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "assets:ocr": "node scripts/sync-ocr-assets.mjs",
+    "build": "npm run assets:ocr && tsc -b && vite build",
     "test": "vitest run",
     "preview": "vite preview",
     "android:add": "cap add android",
     "android:sync": "cap sync android",
-    "android:open": "cap open android"
+    "android:open": "cap open android",
+    "android:apk": "node scripts/build-android-apk.mjs"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^7.0.3",

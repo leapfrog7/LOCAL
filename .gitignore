@@ -2,6 +2,8 @@ node_modules/
 dist/
 android/.gradle/
 android/app/build/
+.android-tools/
+artifacts/
 .idea/
 *.log
 *.tsbuildinfo

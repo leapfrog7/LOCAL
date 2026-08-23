@@ -24,8 +24,8 @@ Android Studio and an Android SDK are required to build the APK.
 ## Current implementation
 
 - Mobile-first document library and local keyword search
-- Multi-page camera capture or image import
-- LOCAL-owned document processing pipeline with automatic boundary estimation
+- Multi-page capture through Google ML Kit Document Scanner, with image import and a local camera fallback
+- ML Kit edge detection, automatic capture, perspective correction, and native high-resolution camera output
 - Four-corner touch adjustment and perspective correction
 - Clean Colour, Grayscale, and adaptive B&W rendering presets
 - Local illumination normalization, bright-region white balance, conservative denoise, percentile contrast, and subtle sharpening stages
@@ -39,18 +39,20 @@ Android Studio and an Android SDK are required to build the APK.
 - Versioned native SQLite metadata, folders, pages, processing jobs, and FTS5 search index
 - Automatic one-time IndexedDB-to-SQLite metadata migration on native platforms
 - IndexedDB metadata repository and browser-development fallback, with no backend or network calls
-- Bundled Tesseract LSTM runtime with English and Hindi traineddata; no runtime language download
+- Native ML Kit OCR for English and Devanagari, barcode recognition, and bundled Tesseract fallback assets
 - Durable page-level OCR jobs with restart recovery and bounded retries
-- Document viewer, folder browser, rename, deletion, and one-tap PDF export
+- Background OCR that survives activity recreation, with immediate PDF access and bounded retries
+- Smart on-device titles and metadata extraction for common receipts, bills, letters, and office documents
+- Document viewer, folder browser, rename, deletion, post-save crop correction, and one-tap PDF export
 - On-device scanned-page PDF generation with page rotation preserved
 - Browser download and native Android save/share sheet
-- Explicit privacy status screen
+- App and document-level biometric locking with hidden private previews
+- AES password protection for portable PDFs, independent from LOCAL's private lock
+- Passphrase-encrypted local backup and restore
 - Replaceable scanner, OCR, PDF, repository, and sharing contracts
 - Capacitor Android shell with Filesystem and Share plugins available
 
-The current boundary detector uses a lightweight, fully local classical edge-energy pass and the image pipeline uses Canvas-based processing. The next scanner-quality phase will benchmark these stages against representative office documents and selectively introduce bundled OpenCV/WASM where it materially improves quadrilateral detection, illumination correction, or denoising. Google ML Kit Document Scanner is not used.
-
-OCR uses a bundled local worker, WASM core, and compressed English/Hindi language assets from `public/ocr`. Explicit local paths and disabled OCR caching prevent CDN fallback and silent language downloads.
+Google ML Kit Document Scanner owns Android capture, edge detection, cropping, and perspective correction. LOCAL retains its own page editor, enhancement presets, storage, OCR queue, searchable-PDF generation, and browser-compatible fallback scanner. Native OCR and barcode recognition remain on the device; bundled Tesseract assets provide the browser fallback without a CDN dependency.
 
 `@capacitor-community/sqlite` uses SQLCipher even for unencrypted databases. Before public distribution, review the applicable encryption export/self-classification obligations for the target jurisdictions and stores.
 

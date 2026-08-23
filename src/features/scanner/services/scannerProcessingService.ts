@@ -2,7 +2,7 @@ import type { DocumentPage, PageCorners, ProcessingAdjustments, RenderPreset } f
 import { correctWhiteBalance } from '../processing/colourCorrection'
 import { reduceNoise } from '../processing/denoise'
 import { detectDocument } from '../processing/edgeDetection'
-import { canvasToJpeg } from '../processing/imageUtils'
+import { canvasToJpeg, loadImage } from '../processing/imageUtils'
 import { normalizeIllumination } from '../processing/illumination'
 import { correctPerspective } from '../processing/perspective'
 import { renderOcrOptimized, renderPreset } from '../processing/renderPresets'
@@ -43,8 +43,42 @@ export async function generatePipelineStages(originalImageUrl: string, corners: 
   return stages
 }
 
-export async function preparePage(id: string, originalImageUrl: string): Promise<DocumentPage> {
-  const detection = await detectDocument(originalImageUrl), preset: RenderPreset = 'document'
+export async function preparePage(id: string, originalImageUrl: string, proposed?: { corners: PageCorners; confidence: number }): Promise<DocumentPage> {
+  const detection = proposed ?? await detectDocument(originalImageUrl), preset: RenderPreset = 'auto'
   const { imageUrl, thumbnailUrl, ocrImageUrl } = await processPageImages(originalImageUrl, detection.corners, preset)
   return { id, originalImageUrl, imageUrl, thumbnailUrl, ocrImageUrl, corners: detection.corners, detectionConfidence: detection.confidence, renderPreset: preset, processingState: detection.confidence < .5 ? 'needs_review' : 'processed', rotation: 0, ocrText: '', ocrState: 'pending' }
+}
+
+export async function prepareNativeScannedPage(id: string, originalImageUrl: string): Promise<DocumentPage> {
+  const image = await loadImage(originalImageUrl)
+  const thumbnail = document.createElement('canvas')
+  const thumbnailScale = Math.min(1, 320 / Math.max(image.naturalWidth, image.naturalHeight))
+  thumbnail.width = Math.max(1, Math.round(image.naturalWidth * thumbnailScale))
+  thumbnail.height = Math.max(1, Math.round(image.naturalHeight * thumbnailScale))
+  thumbnail.getContext('2d')?.drawImage(image, 0, 0, thumbnail.width, thumbnail.height)
+
+  const ocr = document.createElement('canvas')
+  const ocrScale = Math.min(1, 2200 / Math.max(image.naturalWidth, image.naturalHeight))
+  ocr.width = Math.max(1, Math.round(image.naturalWidth * ocrScale))
+  ocr.height = Math.max(1, Math.round(image.naturalHeight * ocrScale))
+  ocr.getContext('2d')?.drawImage(image, 0, 0, ocr.width, ocr.height)
+  renderOcrOptimized(ocr)
+
+  const page: DocumentPage = {
+    id,
+    originalImageUrl,
+    imageUrl: originalImageUrl,
+    thumbnailUrl: canvasToJpeg(thumbnail, .8),
+    ocrImageUrl: canvasToJpeg(ocr, .86),
+    corners: { topLeft: { x: 0, y: 0 }, topRight: { x: 1, y: 0 }, bottomRight: { x: 1, y: 1 }, bottomLeft: { x: 0, y: 1 } },
+    detectionConfidence: 1,
+    renderPreset: 'original',
+    processingState: 'processed',
+    rotation: 0,
+    ocrText: '',
+    ocrState: 'pending',
+  }
+  releaseCanvas(thumbnail)
+  releaseCanvas(ocr)
+  return page
 }

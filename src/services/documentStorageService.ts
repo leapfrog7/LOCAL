@@ -30,7 +30,7 @@ async function displayUrl(path?: string) {
 async function persistPage(documentId: string, page: DocumentPage): Promise<DocumentPage> {
   const stored = { ...page }
   if (!stored.originalImagePath && isDataUrl(stored.originalImageUrl)) stored.originalImagePath = await writeImage(documentId, page.id, 'original', stored.originalImageUrl!)
-  if (!stored.imagePath && isDataUrl(stored.imageUrl)) stored.imagePath = await writeImage(documentId, page.id, 'processed', stored.imageUrl)
+  if (!stored.imagePath && isDataUrl(stored.imageUrl)) stored.imagePath = stored.imageUrl === stored.originalImageUrl && stored.originalImagePath ? stored.originalImagePath : await writeImage(documentId, page.id, 'processed', stored.imageUrl)
   if (!stored.ocrImagePath && isDataUrl(stored.ocrImageUrl)) stored.ocrImagePath = await writeImage(documentId, page.id, 'ocr', stored.ocrImageUrl!)
   if (!stored.thumbnailPath && isDataUrl(stored.thumbnailUrl)) {
     stored.thumbnailPath = stored.thumbnailUrl === stored.imageUrl && stored.imagePath

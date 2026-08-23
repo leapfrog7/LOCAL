@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react'
 import { Maximize2, Minus, Plus } from 'lucide-react'
+import type { OCRBoundingBox } from '../../../domain/types'
 
 const clamp = (value: number) => Math.min(4, Math.max(1, value))
 
-export function ZoomablePage({ src, alt, rotation }: { src: string; alt: string; rotation: number }) {
+export function ZoomablePage({ src, alt, rotation, highlights = [] }: { src: string; alt: string; rotation: number; highlights?: OCRBoundingBox[] }) {
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
   const pointers = useRef(new Map<number, { x: number; y: number }>())
   const gesture = useRef({ distance: 0, scale: 1 })
@@ -35,7 +36,7 @@ export function ZoomablePage({ src, alt, rotation }: { src: string; alt: string;
   const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => { pointers.current.delete(event.pointerId) }
 
   return <div className="zoom-page" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onDoubleClick={() => view.scale === 1 ? zoom(1) : reset()}>
-    <img src={src} alt={alt} draggable={false} style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale}) rotate(${rotation}deg)` }} />
+    <div className="zoom-page-content" style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale}) rotate(${rotation}deg)` }}><img src={src} alt={alt} draggable={false} />{highlights.map((box, index) => <mark key={`${box.x}-${box.y}-${index}`} className="ocr-highlight" style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.width * 100}%`, height: `${box.height * 100}%` }} aria-hidden="true" />)}</div>
     <div className="zoom-controls" aria-label="Page zoom controls">
       <button onClick={() => zoom(-.5)} disabled={view.scale === 1} aria-label="Zoom out"><Minus /></button>
       <button onClick={reset} aria-label="Reset zoom"><Maximize2 /><span>{Math.round(view.scale * 100)}%</span></button>
