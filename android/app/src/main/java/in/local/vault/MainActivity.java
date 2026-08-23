@@ -12,6 +12,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(MlKitOcrPlugin.class);
         registerPlugin(BackgroundProcessingPlugin.class);
         registerPlugin(BiometricLockPlugin.class);
+        registerPlugin(DatabaseSecurityPlugin.class);
+        registerPlugin(VaultEncryptionPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

@@ -55,6 +55,9 @@ export interface VaultDocument {
   pages: DocumentPage[]
   tags: string[]
   isPrivate?: boolean
+  storageProtection?: 'keystore-v1'
+  privateSessionId?: string
+  privatePdfPath?: string
   pdfPasswordProtected?: boolean
   pdfPath?: string
   pdfGeneratedAt?: string

@@ -1,6 +1,7 @@
 import { Capacitor } from '@capacitor/core'
-import { Directory, Encoding, Filesystem } from '@capacitor/filesystem'
+import { Directory, Filesystem } from '@capacitor/filesystem'
 import type { DocumentPage, VaultDocument } from '../domain/types'
+import { privateStorageService } from './privateStorageService'
 
 const ROOT = 'LOCAL/documents'
 const isDataUrl = (value?: string) => Boolean(value?.startsWith('data:'))
@@ -47,23 +48,27 @@ export const documentStorageService = {
     if (!Capacitor.isNativePlatform()) return document
     const pages: DocumentPage[] = []
     for (const page of document.pages) pages.push(await persistPage(document.id, page))
-    const stored = { ...document, storageVersion: 1, pages }
-    const metadata = this.forMetadata(stored)
-    await Filesystem.writeFile({ path: `${ROOT}/${document.id}/metadata.json`, data: JSON.stringify(metadata, null, 2), directory: Directory.Data, encoding: Encoding.UTF8, recursive: true })
+    let stored: VaultDocument = { ...document, storageVersion: 2, pages }
+    if (stored.isPrivate) stored = await privateStorageService.protect(stored)
+    else if (stored.storageProtection === 'keystore-v1' || stored.pages.some(page => privateStorageService.isEncryptedPath(page.imagePath)) || privateStorageService.isEncryptedPath(stored.pdfPath)) stored = await privateStorageService.unprotect(stored)
+    await this.removeFile(`${ROOT}/${document.id}/metadata.json`)
     return stored
   },
 
-  async hydrate(document: VaultDocument): Promise<VaultDocument> {
+  async hydrate(document: VaultDocument, revealPrivate = false): Promise<VaultDocument> {
     if (!Capacitor.isNativePlatform()) return document
+    if (document.isPrivate && !revealPrivate) return { ...document, privateSessionId: undefined, pages: document.pages.map(page => ({ ...page, imageUrl: '', originalImageUrl: undefined, thumbnailUrl: undefined, ocrImageUrl: undefined })) }
+    const revealed = revealPrivate ? await privateStorageService.revealPaths(document) : { sessionId: undefined, paths: {} as Record<string, string> }
+    const visiblePath = (path?: string) => path ? revealed.paths[path] ?? path : undefined
     const pages: DocumentPage[] = []
     for (const page of document.pages) pages.push({
       ...page,
-      imageUrl: page.imagePath ? await displayUrl(page.imagePath) : page.imageUrl,
-      originalImageUrl: page.originalImagePath ? await displayUrl(page.originalImagePath) : page.originalImageUrl,
-      thumbnailUrl: page.thumbnailPath ? await displayUrl(page.thumbnailPath) : page.thumbnailUrl,
-      ocrImageUrl: page.ocrImagePath ? await displayUrl(page.ocrImagePath) : page.ocrImageUrl,
+      imageUrl: page.imagePath ? await displayUrl(visiblePath(page.imagePath)) : page.imageUrl,
+      originalImageUrl: page.originalImagePath ? await displayUrl(visiblePath(page.originalImagePath)) : page.originalImageUrl,
+      thumbnailUrl: page.thumbnailPath ? await displayUrl(visiblePath(page.thumbnailPath)) : page.thumbnailUrl,
+      ocrImageUrl: page.ocrImagePath ? await displayUrl(visiblePath(page.ocrImagePath)) : page.ocrImageUrl,
     })
-    return { ...document, pages }
+    return { ...document, privateSessionId: revealed.sessionId, privatePdfPath: document.pdfPath ? revealed.paths[document.pdfPath] : undefined, pages }
   },
 
   async persistPdf(documentId: string, blob: Blob) {
@@ -92,6 +97,8 @@ export const documentStorageService = {
   forMetadata(document: VaultDocument): VaultDocument {
     return {
       ...document,
+      privateSessionId: undefined,
+      privatePdfPath: undefined,
       pages: document.pages.map(page => ({
         ...page,
         imageUrl: page.imagePath ? '' : page.imageUrl,

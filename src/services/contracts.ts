@@ -8,6 +8,7 @@ export interface PdfService { create(document: VaultDocument, options?: PdfRende
 export interface DocumentRepository {
   list(): Promise<VaultDocument[]>
   get(id: string): Promise<VaultDocument | undefined>
+  reveal(id: string): Promise<VaultDocument | undefined>
   save(document: VaultDocument): Promise<void>
   remove(id: string): Promise<void>
   search(query: string): Promise<VaultDocument[]>

@@ -68,7 +68,7 @@ export const pdfService: PdfService = {
 export async function persistSearchablePdf(vaultDocument: VaultDocument): Promise<VaultDocument> {
   const blob = await pdfService.create(vaultDocument)
   const pdfPath = await documentStorageService.persistPdf(vaultDocument.id, blob)
-  return { ...vaultDocument, pdfPath, pdfGeneratedAt: new Date().toISOString() }
+  return { ...vaultDocument, pdfPath, privatePdfPath: undefined, pdfGeneratedAt: new Date().toISOString() }
 }
 
 async function ensurePersistedPdf(vaultDocument: VaultDocument) {
@@ -128,7 +128,7 @@ export async function downloadPdf(vaultDocument: VaultDocument): Promise<VaultDo
     return vaultDocument
   }
   const ready = await ensurePersistedPdf(vaultDocument)
-  const result = await nativePdfDownload.savePdf({ sourcePath: ready.pdfPath!, filename })
+  const result = await nativePdfDownload.savePdf({ sourcePath: ready.privatePdfPath ?? ready.pdfPath!, filename })
   console.info('[pdf] saved to Android Downloads', { documentId: vaultDocument.id, location: result.location })
   return ready
 }
@@ -149,7 +149,7 @@ export async function sharePdf(vaultDocument: VaultDocument): Promise<VaultDocum
     return vaultDocument
   }
   const ready = await ensurePersistedPdf(vaultDocument)
-  const uri = await documentStorageService.nativeUri(ready.pdfPath!)
+  const uri = await documentStorageService.nativeUri(ready.privatePdfPath ?? ready.pdfPath!)
   console.info('[pdf] opening Android share dialog', { documentId: vaultDocument.id, pdfPath: ready.pdfPath })
   try { await Share.share({ title: filename, text: 'Scanned with LOCAL', files: [uri], dialogTitle: 'Share PDF' }) }
   catch (error) { console.error('[pdf] Android share dialog failed', { documentId: vaultDocument.id, pdfPath: ready.pdfPath, error: error instanceof Error ? error.message : String(error) }); throw error }

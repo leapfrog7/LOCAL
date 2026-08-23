@@ -1,5 +1,6 @@
 package in.local.vault;
 
+import android.view.WindowManager;
 import androidx.annotation.NonNull;
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
@@ -21,6 +22,16 @@ public class BiometricLockPlugin extends Plugin {
         response.put("available", result == BiometricManager.BIOMETRIC_SUCCESS);
         response.put("reason", result);
         call.resolve(response);
+    }
+
+    @PluginMethod
+    public void setScreenSecure(PluginCall call) {
+        boolean enabled = call.getBoolean("enabled", true);
+        getActivity().runOnUiThread(() -> {
+            if (enabled) getActivity().getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            else getActivity().getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            call.resolve();
+        });
     }
 
     @PluginMethod

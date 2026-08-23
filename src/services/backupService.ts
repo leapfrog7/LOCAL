@@ -4,6 +4,8 @@ import { Share } from '@capacitor/share'
 import type { DocumentPage, VaultDocument } from '../domain/types'
 import { documentsRepository } from './documentRepository'
 import { documentStorageService } from './documentStorageService'
+import { appLockService } from './appLockService'
+import { privateStorageService } from './privateStorageService'
 
 const FORMAT = 'local-encrypted-backup-v1'
 const ITERATIONS = 250_000
@@ -40,7 +42,7 @@ async function portablePage(page: DocumentPage): Promise<DocumentPage> {
 async function portableDocument(document: VaultDocument) {
   const pages: DocumentPage[] = []
   for (const page of document.pages) pages.push(await portablePage(page))
-  return { ...document, pages, pdfPath: undefined, pdfGeneratedAt: undefined }
+  return { ...document, pages, pdfPath: undefined, pdfGeneratedAt: undefined, storageProtection: undefined, privateSessionId: undefined, privatePdfPath: undefined }
 }
 
 async function keyFor(passphrase: string, salt: Uint8Array, usage: KeyUsage[]) {
@@ -87,7 +89,13 @@ async function deliverBackup(blob: Blob, filename: string) {
 export const backupService = {
   async create(passphrase: string) {
     const source = await documentsRepository.list(), documents: VaultDocument[] = []
-    for (const document of source) documents.push(await portableDocument(document))
+    if (source.some(document => document.isPrivate)) await appLockService.authenticate()
+    for (const document of source) {
+      const visible = document.isPrivate ? await documentsRepository.reveal(document.id) : document
+      if (!visible) throw new Error('A private document could not be opened for backup.')
+      try { documents.push(await portableDocument(visible)) }
+      finally { await privateStorageService.clearSession(visible.privateSessionId) }
+    }
     const createdAt = new Date().toISOString(), blob = await encryptBackupPayload({ format: 'local-backup-v1', createdAt, documents }, passphrase)
     const filename = `LOCAL-backup-${createdAt.slice(0, 10)}.localbackup`
     await deliverBackup(blob, filename)
@@ -97,7 +105,7 @@ export const backupService = {
   async restore(file: File, passphrase: string) {
     const payload = await decryptBackupPayload(file, passphrase)
     for (const document of payload.documents) {
-      const cleanDocument = { ...document, pdfPath: undefined, pdfGeneratedAt: undefined, pages: document.pages.map(page => ({ ...page, imagePath: undefined, originalImagePath: undefined, thumbnailPath: undefined, ocrImagePath: undefined })) }
+      const cleanDocument = { ...document, storageProtection: undefined, privateSessionId: undefined, privatePdfPath: undefined, pdfPath: undefined, pdfGeneratedAt: undefined, pages: document.pages.map(page => ({ ...page, imagePath: undefined, originalImagePath: undefined, thumbnailPath: undefined, ocrImagePath: undefined })) }
       await documentsRepository.save(cleanDocument)
     }
     return { count: payload.documents.length, createdAt: payload.createdAt }

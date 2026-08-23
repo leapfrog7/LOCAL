@@ -39,12 +39,19 @@ function ensureNativeMigration() {
   return nativeMigration
 }
 
+async function ensurePrivateStorage(record: VaultDocument) {
+  if (!sqliteRepository.available() || !record.isPrivate || record.storageProtection === 'keystore-v1') return record
+  const protectedRecord = await documentStorageService.persist(record)
+  await sqliteRepository.save(documentStorageService.forMetadata(protectedRecord))
+  return protectedRecord
+}
+
 export const documentsRepository: DocumentRepository = {
   async list() {
     if (sqliteRepository.available()) {
       await ensureNativeMigration()
       const records = await sqliteRepository.list(), documents: VaultDocument[] = []
-      for (const record of records) documents.push(await documentStorageService.hydrate(record))
+      for (const record of records) documents.push(await documentStorageService.hydrate(await ensurePrivateStorage(record)))
       return documents
     }
     const records = await transaction('readonly', s => s.getAll()) as VaultDocument[]
@@ -60,7 +67,8 @@ export const documentsRepository: DocumentRepository = {
   async get(id) {
     if (sqliteRepository.available()) {
       await ensureNativeMigration()
-      const record = await sqliteRepository.get(id)
+      const raw = await sqliteRepository.get(id)
+      const record = raw ? await ensurePrivateStorage(raw) : undefined
       return record ? documentStorageService.hydrate(record) : undefined
     }
     const record = await transaction('readonly', s => s.get(id)) as VaultDocument | undefined
@@ -70,8 +78,18 @@ export const documentsRepository: DocumentRepository = {
     if (needsMigration) await transaction('readwrite', store => store.put(documentStorageService.forMetadata(persisted)))
     return documentStorageService.hydrate(persisted)
   },
+  async reveal(id) {
+    if (sqliteRepository.available()) {
+      await ensureNativeMigration()
+      const raw = await sqliteRepository.get(id)
+      const record = raw ? await ensurePrivateStorage(raw) : undefined
+      return record ? documentStorageService.hydrate(record, true) : undefined
+    }
+    return this.get(id)
+  },
   async save(document) {
     const persisted = await documentStorageService.persist(document)
+    Object.assign(document, persisted)
     if (sqliteRepository.available()) { await ensureNativeMigration(); await sqliteRepository.save(documentStorageService.forMetadata(persisted)); return }
     await transaction('readwrite', store => store.put(documentStorageService.forMetadata(persisted)))
   },
@@ -84,7 +102,7 @@ export const documentsRepository: DocumentRepository = {
     if (sqliteRepository.available()) {
       await ensureNativeMigration()
       const records = await sqliteRepository.search(query), documents: VaultDocument[] = []
-      for (const record of records) documents.push(await documentStorageService.hydrate(record))
+      for (const record of records) documents.push(await documentStorageService.hydrate(await ensurePrivateStorage(record)))
       return documents
     }
     const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean)

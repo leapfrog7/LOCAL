@@ -1,10 +1,17 @@
-import { Capacitor } from '@capacitor/core'
+import { Capacitor, registerPlugin } from '@capacitor/core'
 import { CapacitorSQLite, SQLiteConnection, type SQLiteDBConnection } from '@capacitor-community/sqlite'
 import type { DetectedBarcode, DocumentPage, DocumentSmartMetadata, DocumentStatus, OCRWord, PageCorners, PageProcessingState, ProcessingAdjustments, RenderPreset, VaultDocument } from '../domain/types'
 import type { ProcessingJob, ProcessingJobStatus, ProcessingJobType } from '../domain/processing'
 
 const DB_NAME = 'local_vault'
 const sqlite = new SQLiteConnection(CapacitorSQLite)
+interface DatabaseSecurityNative {
+  inspect(): Promise<{ exists: boolean; bytes: number }>
+  prepare(): Promise<{ created: boolean }>
+  restore(): Promise<void>
+  clear(): Promise<void>
+}
+const databaseSecurity = registerPlugin<DatabaseSecurityNative>('DatabaseSecurity')
 let connectionPromise: Promise<SQLiteDBConnection> | undefined
 let ftsAvailable = true
 let writeQueue: Promise<void> = Promise.resolve()
@@ -24,7 +31,8 @@ CREATE TABLE IF NOT EXISTS documents (
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL, status TEXT NOT NULL,
   tags_json TEXT NOT NULL DEFAULT '[]', storage_version INTEGER NOT NULL DEFAULT 1,
   pdf_path TEXT, pdf_generated_at TEXT, processing_stage TEXT, title_source TEXT, smart_metadata_json TEXT,
-  is_private INTEGER NOT NULL DEFAULT 0, pdf_password_protected INTEGER NOT NULL DEFAULT 0
+  is_private INTEGER NOT NULL DEFAULT 0, pdf_password_protected INTEGER NOT NULL DEFAULT 0,
+  storage_protection TEXT
 );
 CREATE TABLE IF NOT EXISTS pages (
   id TEXT PRIMARY KEY NOT NULL, document_id TEXT NOT NULL, position INTEGER NOT NULL,
@@ -47,9 +55,34 @@ CREATE INDEX IF NOT EXISTS jobs_status_updated ON processing_jobs(status, update
 async function getConnection() {
   if (!Capacitor.isNativePlatform()) throw new Error('SQLite is only enabled in native builds.')
   if (!connectionPromise) connectionPromise = (async () => {
+    const inspection = await databaseSecurity.inspect()
+    const databaseExists = inspection.exists
+    const emptyDatabase = databaseExists && inspection.bytes === 0
+    const databaseEncrypted = databaseExists && !emptyDatabase ? (await sqlite.isDatabaseEncrypted(DB_NAME)).result : false
+    const secretStored = (await sqlite.isSecretStored()).result
+    if (!secretStored) {
+      const random = new Uint8Array(48)
+      crypto.getRandomValues(random)
+      const passphrase = Array.from(random, value => value.toString(16).padStart(2, '0')).join('')
+      await sqlite.setEncryptionSecret(passphrase)
+    }
+    const needsMigration = databaseExists && !emptyDatabase && !databaseEncrypted
+    if (needsMigration) await databaseSecurity.prepare()
     const existing = await sqlite.isConnection(DB_NAME, false)
-    const db = existing.result ? await sqlite.retrieveConnection(DB_NAME, false) : await sqlite.createConnection(DB_NAME, false, 'no-encryption', 1, false)
-    await db.open(); await db.execute(SCHEMA)
+    const db = existing.result ? await sqlite.retrieveConnection(DB_NAME, false) : await sqlite.createConnection(DB_NAME, true, needsMigration ? 'encryption' : 'secret', 1, false)
+    try {
+      await db.open()
+      await db.execute(SCHEMA)
+      await db.query('PRAGMA integrity_check;')
+      if (!(await sqlite.isDatabaseEncrypted(DB_NAME)).result) throw new Error('Database encryption verification failed.')
+      if (needsMigration) await databaseSecurity.clear()
+    } catch (error) {
+      if (needsMigration) {
+        try { await db.close() } catch { /* The failed migration may not have opened a connection. */ }
+        await databaseSecurity.restore()
+      }
+      throw error
+    }
     const columns = new Set(((await db.query('PRAGMA table_info(documents)')).values ?? []).map(row => String(row.name)))
     if (!columns.has('pdf_path')) await db.execute('ALTER TABLE documents ADD COLUMN pdf_path TEXT;')
     if (!columns.has('pdf_generated_at')) await db.execute('ALTER TABLE documents ADD COLUMN pdf_generated_at TEXT;')
@@ -58,11 +91,12 @@ async function getConnection() {
     if (!columns.has('smart_metadata_json')) await db.execute('ALTER TABLE documents ADD COLUMN smart_metadata_json TEXT;')
     if (!columns.has('is_private')) await db.execute('ALTER TABLE documents ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0;')
     if (!columns.has('pdf_password_protected')) await db.execute('ALTER TABLE documents ADD COLUMN pdf_password_protected INTEGER NOT NULL DEFAULT 0;')
+    if (!columns.has('storage_protection')) await db.execute('ALTER TABLE documents ADD COLUMN storage_protection TEXT;')
     const pageColumns = new Set(((await db.query('PRAGMA table_info(pages)')).values ?? []).map(row => String(row.name)))
     if (!pageColumns.has('ocr_words_json')) await db.execute("ALTER TABLE pages ADD COLUMN ocr_words_json TEXT NOT NULL DEFAULT '[]';")
     if (!pageColumns.has('adjustments_json')) await db.execute('ALTER TABLE pages ADD COLUMN adjustments_json TEXT;')
     if (!pageColumns.has('barcodes_json')) await db.execute("ALTER TABLE pages ADD COLUMN barcodes_json TEXT NOT NULL DEFAULT '[]';")
-    await db.execute('PRAGMA user_version = 7;')
+    await db.execute('PRAGMA user_version = 8;')
     try { await db.execute('CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(document_id UNINDEXED, title, folder, ocr_text);') }
     catch { ftsAvailable = false }
     return db
@@ -95,7 +129,7 @@ async function documentsFromRows(rows: Row[]) {
   const db = await getConnection(), documents: VaultDocument[] = []
   for (const row of rows) {
     const pageRows = (await db.query('SELECT * FROM pages WHERE document_id = ? ORDER BY position', [text(row.id)])).values ?? []
-    documents.push({ id: text(row.id), storageVersion: number(row.storage_version), title: text(row.title), titleSource: optionalText(row.title_source) as VaultDocument['titleSource'], smartMetadata: parseJson<DocumentSmartMetadata | undefined>(row.smart_metadata_json, undefined), folder: text(row.folder), createdAt: text(row.created_at), updatedAt: text(row.updated_at), status: text(row.status) as DocumentStatus, tags: parseJson<string[]>(row.tags_json, []), isPrivate: number(row.is_private) === 1, pdfPasswordProtected: number(row.pdf_password_protected) === 1, pdfPath: optionalText(row.pdf_path), pdfGeneratedAt: optionalText(row.pdf_generated_at), processingStage: optionalText(row.processing_stage) as VaultDocument['processingStage'], pages: pageRows.map(pageFromRow) })
+    documents.push({ id: text(row.id), storageVersion: number(row.storage_version), title: text(row.title), titleSource: optionalText(row.title_source) as VaultDocument['titleSource'], smartMetadata: parseJson<DocumentSmartMetadata | undefined>(row.smart_metadata_json, undefined), folder: text(row.folder), createdAt: text(row.created_at), updatedAt: text(row.updated_at), status: text(row.status) as DocumentStatus, tags: parseJson<string[]>(row.tags_json, []), isPrivate: number(row.is_private) === 1, storageProtection: optionalText(row.storage_protection) as VaultDocument['storageProtection'], pdfPasswordProtected: number(row.pdf_password_protected) === 1, pdfPath: optionalText(row.pdf_path), pdfGeneratedAt: optionalText(row.pdf_generated_at), processingStage: optionalText(row.processing_stage) as VaultDocument['processingStage'], pages: pageRows.map(pageFromRow) })
   }
   return documents
 }
@@ -108,6 +142,12 @@ async function refreshSearchIndex(db: SQLiteDBConnection, document: VaultDocumen
 
 export const sqliteRepository = {
   available: () => Capacitor.isNativePlatform(),
+
+  async securityStatus() {
+    if (!Capacitor.isNativePlatform()) return { databaseEncrypted: false }
+    await getConnection()
+    return { databaseEncrypted: Boolean((await sqlite.isDatabaseEncrypted(DB_NAME)).result) }
+  },
 
   async list() {
     const db = await getConnection(), rows = (await db.query('SELECT * FROM documents ORDER BY updated_at DESC')).values ?? []
@@ -124,9 +164,9 @@ export const sqliteRepository = {
       const db = await getConnection()
       await db.execute('BEGIN TRANSACTION;', false)
       try {
-        await db.run(`INSERT INTO documents(id,title,folder,created_at,updated_at,status,tags_json,storage_version,pdf_path,pdf_generated_at,processing_stage,title_source,smart_metadata_json,is_private,pdf_password_protected) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET title=excluded.title,folder=excluded.folder,updated_at=excluded.updated_at,status=excluded.status,tags_json=excluded.tags_json,storage_version=excluded.storage_version,pdf_path=excluded.pdf_path,pdf_generated_at=excluded.pdf_generated_at,processing_stage=excluded.processing_stage,title_source=excluded.title_source,smart_metadata_json=excluded.smart_metadata_json,is_private=excluded.is_private,pdf_password_protected=excluded.pdf_password_protected`,
-        [document.id, document.title, document.folder, document.createdAt, document.updatedAt, document.status, JSON.stringify(document.tags), document.storageVersion ?? 1, document.pdfPath ?? null, document.pdfGeneratedAt ?? null, document.processingStage ?? null, document.titleSource ?? null, document.smartMetadata ? JSON.stringify(document.smartMetadata) : null, document.isPrivate ? 1 : 0, document.pdfPasswordProtected ? 1 : 0], false)
+        await db.run(`INSERT INTO documents(id,title,folder,created_at,updated_at,status,tags_json,storage_version,pdf_path,pdf_generated_at,processing_stage,title_source,smart_metadata_json,is_private,pdf_password_protected,storage_protection) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET title=excluded.title,folder=excluded.folder,updated_at=excluded.updated_at,status=excluded.status,tags_json=excluded.tags_json,storage_version=excluded.storage_version,pdf_path=excluded.pdf_path,pdf_generated_at=excluded.pdf_generated_at,processing_stage=excluded.processing_stage,title_source=excluded.title_source,smart_metadata_json=excluded.smart_metadata_json,is_private=excluded.is_private,pdf_password_protected=excluded.pdf_password_protected,storage_protection=excluded.storage_protection`,
+        [document.id, document.title, document.folder, document.createdAt, document.updatedAt, document.status, JSON.stringify(document.tags), document.storageVersion ?? 1, document.pdfPath ?? null, document.pdfGeneratedAt ?? null, document.processingStage ?? null, document.titleSource ?? null, document.smartMetadata ? JSON.stringify(document.smartMetadata) : null, document.isPrivate ? 1 : 0, document.pdfPasswordProtected ? 1 : 0, document.storageProtection ?? null], false)
         await db.run('INSERT OR IGNORE INTO folders(name, created_at) VALUES(?, ?)', [document.folder, document.createdAt], false)
         for (const [position, page] of document.pages.entries()) await db.run(`INSERT INTO pages(id,document_id,position,image_path,original_image_path,thumbnail_path,ocr_image_path,rotation,ocr_text,ocr_state,ocr_confidence,ocr_languages,processing_state,render_preset,corners_json,detection_confidence,ocr_words_json,adjustments_json,barcodes_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           ON CONFLICT(id) DO UPDATE SET position=excluded.position,image_path=excluded.image_path,original_image_path=excluded.original_image_path,thumbnail_path=excluded.thumbnail_path,ocr_image_path=excluded.ocr_image_path,rotation=excluded.rotation,ocr_text=excluded.ocr_text,ocr_state=excluded.ocr_state,ocr_confidence=excluded.ocr_confidence,ocr_languages=excluded.ocr_languages,processing_state=excluded.processing_state,render_preset=excluded.render_preset,corners_json=excluded.corners_json,detection_confidence=excluded.detection_confidence,ocr_words_json=excluded.ocr_words_json,adjustments_json=excluded.adjustments_json,barcodes_json=excluded.barcodes_json`,

@@ -32,6 +32,9 @@ import { PageExtractSheet } from './features/viewer/components/PageExtractSheet'
 import { CompressionSheet } from './features/viewer/components/CompressionSheet'
 import { TagEditorSheet } from './features/viewer/components/TagEditorSheet'
 import { BulkActionBar, BulkOrganizeSheet, type BulkEditMode } from './features/library/components/BulkDocumentTools'
+import { StorageSecurityPanel } from './features/settings/components/StorageSecurityPanel'
+import { screenSecurityService } from './services/screenSecurityService'
+import { privateStorageService } from './services/privateStorageService'
 
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
 const statusLabel = (doc: VaultDocument) => {
@@ -55,6 +58,7 @@ function App() {
   const hiddenAt = useRef(0)
   const unlocking = useRef(false)
 
+  useEffect(() => { void privateStorageService.clearAllSessions() }, [])
   const unlock = useCallback(async () => { if (unlocking.current) return; unlocking.current = true; try { await appLockService.authenticate(); setLockState('unlocked') } catch { setLockState('locked') } finally { unlocking.current = false } }, [])
   useEffect(() => { if (!appLockService.enabled()) setLockState('unlocked'); else void unlock() }, [unlock])
   useEffect(() => {
@@ -91,6 +95,8 @@ function App() {
     if (target?.isPrivate) {
       try { await appLockService.authenticate() }
       catch { return }
+      const revealed = await documentsRepository.reveal(id)
+      if (revealed) updateDocument(revealed)
     }
     open({ name: 'viewer', id, page, query: documentQuery })
   }
@@ -144,7 +150,15 @@ function App() {
 
   if (screen.name === 'viewer') {
     const document = documents.find(item => item.id === screen.id)
-    return document ? <Viewer document={document} initialPage={screen.page} initialQuery={screen.query} onBack={() => open({ name: 'home' })} onChange={async updated => { await documentsRepository.save(updated); updateDocument(updated) }} onCreate={saveNewDocument} onDelete={async () => { await documentsRepository.remove(screen.id); await refresh(); open({ name: 'home' }) }} /> : <EmptyLoading />
+    return document ? <Viewer document={document} initialPage={screen.page} initialQuery={screen.query} onBack={() => open({ name: 'home' })} onChange={async updated => {
+      const previousSession = updated.privateSessionId
+      await documentsRepository.save(updated)
+      const visible = updated.isPrivate
+        ? await documentsRepository.reveal(updated.id) ?? updated
+        : await documentStorageService.hydrate({ ...updated, privateSessionId: undefined, privatePdfPath: undefined })
+      if (previousSession && previousSession !== visible.privateSessionId) await privateStorageService.clearSession(previousSession)
+      updateDocument(visible)
+    }} onCreate={saveNewDocument} onDelete={async () => { await documentsRepository.remove(screen.id); await refresh(); open({ name: 'home' }) }} /> : <EmptyLoading />
   }
 
   return <div className="app-shell">
@@ -399,6 +413,11 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
   const matches = useMemo(() => pageMatches(document, withinQuery), [document, withinQuery])
   const [activeMatchIndex, setActiveMatchIndex] = useState(0)
   const activeMatch = matches[activeMatchIndex]
+  useEffect(() => {
+    void screenSecurityService.setEnabled(Boolean(document.isPrivate))
+    return () => { void screenSecurityService.setEnabled(false) }
+  }, [document.isPrivate])
+  useEffect(() => () => { void privateStorageService.clearSession(document.privateSessionId) }, [document.privateSessionId])
   useEffect(() => { setTitle(document.title) }, [document.title])
   useEffect(() => {
     if (!actionsOpen) return
@@ -501,6 +520,7 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
       status: 'ocr_pending',
       processingStage: 'ocr',
       pdfPath: undefined,
+      privatePdfPath: undefined,
       pdfGeneratedAt: undefined,
       pdfPasswordProtected: undefined,
       updatedAt: new Date().toISOString(),
@@ -572,7 +592,7 @@ function Folders({ documents, onOpen }: { documents: VaultDocument[]; onOpen: (i
 
 function SettingsScreen({ onOpenScannerLab }: { onOpenScannerLab: () => void }) {
   const rows = [['Document storage', documentStorageService.usesNativeFiles() ? 'Private app files' : 'Browser test storage'], ['OCR processing', 'This device'], ['Search indexing', 'This device'], ['Cloud synchronisation', 'Not enabled'], ['Analytics', 'None']]
-  return <><PageHeader icon={<Settings />} title="Settings" subtitle="Privacy and local storage" /><section className="privacy-card"><div className="shield"><ShieldCheck /></div><div><h2>Private by design</h2><p>Documents stay on this device. OCR and search indexing run locally. No document data is uploaded.</p></div></section><AppProtectionPanel /><BackupPanel /><button className="scanner-lab-entry" onClick={onOpenScannerLab}><span><ScanLine /></span><div><strong>Scanner Lab</strong><small>Compare processing on a test document</small></div><ChevronRight /></button><section className="settings-list"><h3>Privacy status</h3>{rows.map(([label, value]) => <div key={label}><span>{label}</span><strong><i />{value}</strong></div>)}</section><section className="about-card"><span>LOCAL</span><small>Version 0.1.0</small><p>A quiet, private home for your important papers.</p></section></>
+  return <><PageHeader icon={<Settings />} title="Settings" subtitle="Privacy and local storage" /><section className="privacy-card"><div className="shield"><ShieldCheck /></div><div><h2>Private by design</h2><p>Documents stay on this device. OCR and search indexing run locally. No document data is uploaded.</p></div></section><StorageSecurityPanel /><AppProtectionPanel /><BackupPanel /><button className="scanner-lab-entry" onClick={onOpenScannerLab}><span><ScanLine /></span><div><strong>Scanner Lab</strong><small>Compare processing on a test document</small></div><ChevronRight /></button><section className="settings-list"><h3>Privacy status</h3>{rows.map(([label, value]) => <div key={label}><span>{label}</span><strong><i />{value}</strong></div>)}</section><section className="about-card"><span>LOCAL</span><small>Version 0.1.0</small><p>A quiet, private home for your important papers.</p></section></>
 }
 
 function AppProtectionPanel() {
@@ -588,6 +608,10 @@ function AppProtectionPanel() {
 }
 
 function AppLockScreen({ checking, onUnlock }: { checking: boolean; onUnlock: () => void }) {
+  useEffect(() => {
+    void screenSecurityService.setEnabled(true)
+    return () => { void screenSecurityService.setEnabled(false) }
+  }, [])
   return <div className="app-lock-screen"><div className="brand-mark"><Archive /></div><h1>LOCAL is locked</h1><p>Your documents remain private until you authenticate.</p><button disabled={checking} onClick={onUnlock}>{checking ? <span className="button-spinner" /> : <LockKeyhole />} {checking ? 'Checking…' : 'Unlock LOCAL'}</button></div>
 }
 
