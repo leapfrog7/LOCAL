@@ -4,9 +4,68 @@ import { documentsRepository } from './documentRepository'
 export interface PageSearchMatch { pageIndex: number; snippet: string; wordIndexes: number[] }
 export type SmartSearchFilter = 'all' | 'bills' | 'invoices' | 'receipts' | 'prescriptions' | 'statements' | 'this_month' | 'needs_attention'
 export interface DocumentSearchResult { document: VaultDocument; pageMatches: PageSearchMatch[]; score: number }
+type AmountOperator = '>' | '>=' | '<' | '<=' | '='
+export interface AdvancedSearchQuery {
+  text: string
+  folder?: string
+  tag?: string
+  type?: string
+  organization?: string
+  private?: boolean
+  after?: string
+  before?: string
+  amount?: { operator: AmountOperator; value: number }
+}
 
 const normalise = (value: string) => value.replace(/\s+/g, ' ').trim()
 const token = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+const ADVANCED_TOKEN = /\b(folder|tag|type|org|private|after|before|amount):(?:"([^"]+)"|(\S+))/gi
+
+export function parseAdvancedQuery(query: string): AdvancedSearchQuery {
+  const parsed: AdvancedSearchQuery = { text: '' }
+  const remaining = query.replace(ADVANCED_TOKEN, (_match, rawKey: string, quoted: string | undefined, plain: string | undefined) => {
+    const key = rawKey.toLocaleLowerCase(), value = normalise(quoted ?? plain ?? '')
+    if (key === 'folder') parsed.folder = value
+    else if (key === 'tag') parsed.tag = value
+    else if (key === 'type') parsed.type = value.toLocaleLowerCase().replace(/[\s-]+/g, '_')
+    else if (key === 'org') parsed.organization = value
+    else if (key === 'private' && /^(true|yes|private|1)$/i.test(value)) parsed.private = true
+    else if (key === 'private' && /^(false|no|public|0)$/i.test(value)) parsed.private = false
+    else if (key === 'after' && /^\d{4}-\d{2}(?:-\d{2})?$/.test(value)) parsed.after = value
+    else if (key === 'before' && /^\d{4}-\d{2}(?:-\d{2})?$/.test(value)) parsed.before = value
+    else if (key === 'amount') {
+      const amount = value.replaceAll(',', '').match(/^(>=|<=|>|<|=)?\s*(\d+(?:\.\d+)?)$/)
+      if (amount) parsed.amount = { operator: (amount[1] || '=') as AmountOperator, value: Number(amount[2]) }
+      else return _match
+    } else return _match
+    return ' '
+  })
+  parsed.text = normalise(remaining)
+  return parsed
+}
+
+const includes = (source: string | undefined, expected: string) => Boolean(source?.toLocaleLowerCase().includes(expected.toLocaleLowerCase()))
+export function matchesAdvancedQuery(document: VaultDocument, query: AdvancedSearchQuery) {
+  if (query.folder && !includes(document.folder, query.folder)) return false
+  if (query.tag && !document.tags.some(tag => includes(tag, query.tag!))) return false
+  if (query.type && document.smartMetadata?.documentType !== query.type) return false
+  if (query.organization && !includes(document.smartMetadata?.organization, query.organization)) return false
+  if (query.private !== undefined && Boolean(document.isPrivate) !== query.private) return false
+  const date = (document.smartMetadata?.documentDate ?? document.createdAt).slice(0, 10)
+  if (query.after && date < query.after.padEnd(10, '-00')) return false
+  if (query.before && date > query.before.padEnd(10, '-99')) return false
+  if (query.amount) {
+    const value = document.smartMetadata?.amount?.value
+    if (value === undefined) return false
+    const { operator, value: expected } = query.amount
+    if (operator === '>' && !(value > expected)) return false
+    if (operator === '>=' && !(value >= expected)) return false
+    if (operator === '<' && !(value < expected)) return false
+    if (operator === '<=' && !(value <= expected)) return false
+    if (operator === '=' && value !== expected) return false
+  }
+  return true
+}
 function snippetFor(text: string, query: string) {
   const plain = normalise(text), lower = plain.toLocaleLowerCase(), hit = lower.indexOf(normalise(query).toLocaleLowerCase())
   const fallback = hit >= 0 ? hit : Math.min(...normalise(query).toLocaleLowerCase().split(' ').map(term => lower.indexOf(term)).filter(index => index >= 0))
@@ -64,11 +123,12 @@ export function resultScore(document: VaultDocument, query: string, matches: Pag
 
 export const searchService = {
   async search(query: string, filter: SmartSearchFilter = 'all'): Promise<DocumentSearchResult[]> {
-    const documents = await documentsRepository.search(query)
-    const terms = normalise(query).toLocaleLowerCase().split(' ').filter(Boolean)
-    return documents.filter(document => matchesSmartFilter(document, filter)).map(document => {
-      const matches = pageMatches(document, query)
-      return { document, pageMatches: matches, score: resultScore(document, query, matches) }
+    const advanced = parseAdvancedQuery(query)
+    const documents = await documentsRepository.search(advanced.text)
+    const terms = normalise(advanced.text).toLocaleLowerCase().split(' ').filter(Boolean)
+    return documents.filter(document => matchesSmartFilter(document, filter) && matchesAdvancedQuery(document, advanced)).map(document => {
+      const matches = pageMatches(document, advanced.text)
+      return { document, pageMatches: matches, score: resultScore(document, advanced.text, matches) }
     }).filter(result => {
       const metadata = [result.document.title, result.document.folder, ...result.document.tags, metadataText(result.document)].join(' ').toLocaleLowerCase()
       return !terms.length || result.pageMatches.length > 0 || terms.every(term => metadata.includes(term))

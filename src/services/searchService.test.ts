@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { VaultDocument } from '../domain/types'
-import { matchesSmartFilter, pageMatches, resultScore } from './searchService'
+import { matchesAdvancedQuery, matchesSmartFilter, pageMatches, parseAdvancedQuery, resultScore } from './searchService'
 
 const document = (texts: string[]): VaultDocument => ({
   id: 'doc', title: 'Example', folder: 'Office', createdAt: '2026-01-01', updatedAt: '2026-01-01', status: 'indexed', tags: [],
@@ -40,5 +40,17 @@ describe('pageMatches', () => {
     const titleMatch = document(['other text']); titleMatch.title = 'Amazon invoice'
     const bodyMatch = document(['Amazon invoice'])
     expect(resultScore(titleMatch, 'Amazon invoice', [])).toBeGreaterThan(resultScore(bodyMatch, 'Amazon invoice', pageMatches(bodyMatch, 'Amazon invoice')))
+  })
+
+  it('parses quoted advanced filters and leaves ordinary search text', () => {
+    expect(parseAdvancedQuery('electricity folder:"House bills" amount:>=5000 after:2026-01')).toEqual({ text: 'electricity', folder: 'House bills', amount: { operator: '>=', value: 5000 }, after: '2026-01' })
+  })
+
+  it('matches local metadata, tags, privacy, dates and amounts', () => {
+    const source = document(['paid invoice'])
+    source.folder = 'Tax records'; source.tags = ['FY 2026']; source.isPrivate = true
+    source.smartMetadata = { documentType: 'invoice', organization: 'Acme India', documentDate: '2026-04-18', amount: { value: 7500, currency: 'INR', display: '₹7,500' } }
+    expect(matchesAdvancedQuery(source, parseAdvancedQuery('folder:tax tag:"FY 2026" type:invoice org:acme private:true after:2026-04 amount:>7000'))).toBe(true)
+    expect(matchesAdvancedQuery(source, parseAdvancedQuery('amount:<7000'))).toBe(false)
   })
 })

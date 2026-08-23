@@ -73,6 +73,18 @@ export const documentStorageService = {
     return path
   },
 
+  async persistTemporaryPdf(blob: Blob) {
+    if (!Capacitor.isNativePlatform()) return undefined
+    const path = `${ROOT}/exports/${crypto.randomUUID()}.pdf`
+    await Filesystem.writeFile({ path, data: await blobBase64(blob), directory: Directory.Data, recursive: true })
+    return path
+  },
+
+  async removeFile(path?: string) {
+    if (!path || !Capacitor.isNativePlatform()) return
+    try { await Filesystem.deleteFile({ path, directory: Directory.Data }) } catch { /* Best-effort cleanup. */ }
+  },
+
   async nativeUri(path: string) {
     return (await Filesystem.getUri({ path, directory: Directory.Data })).uri
   },

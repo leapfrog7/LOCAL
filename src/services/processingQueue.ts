@@ -102,6 +102,10 @@ export async function processDocument(id: string, onProgress?: (document: VaultD
   try {
     const document = await documentsRepository.get(id)
     if (!document) return
+    if (document.pages.length > 0 && document.pages.every(page => page.ocrState === 'complete')) {
+      await finalizeDocument(document, onProgress)
+      return
+    }
     if (enqueue) await enqueueOcrJobs(document)
     document.status = 'ocr_processing'; document.processingStage = 'ocr'
     await documentsRepository.save(document)

@@ -3,7 +3,8 @@ import type { DocumentPage, OCRWord, VaultDocument } from '../domain/types'
 export interface ScannerService { scan(): Promise<DocumentPage[]> }
 export interface OCRResult { text: string; confidence: number; languages: string[]; words: OCRWord[] }
 export interface OCRService { recognize(page: DocumentPage, onProgress?: (progress: number, status: string) => void): Promise<OCRResult> }
-export interface PdfService { create(document: VaultDocument): Promise<Blob> }
+export interface PdfRenderOptions { jpegQuality?: number; maxPageDimension?: number }
+export interface PdfService { create(document: VaultDocument, options?: PdfRenderOptions): Promise<Blob> }
 export interface DocumentRepository {
   list(): Promise<VaultDocument[]>
   get(id: string): Promise<VaultDocument | undefined>

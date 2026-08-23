@@ -1,19 +1,19 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
 import {
-  Archive, ArrowLeft, Camera, Check, ChevronRight, Clock3, Crop, Download, ExternalLink, FileText, Folder, FolderOpen,
+  Archive, ArrowLeft, Camera, Check, ChevronRight, CircleHelp, Clock3, Copy, Crop, Download, ExternalLink, FileText, FileUp, Files, Folder, FolderOpen,
   GripVertical, Home, ImagePlus, LockKeyhole, MoreHorizontal, RotateCw, ScanLine, Search, Settings, ShieldCheck, ChevronDown, ChevronUp,
-  Share2, Trash2, Upload, X, PauseCircle, RefreshCw, Pencil, Lock, Unlock,
+  Share2, Tag, Trash2, Upload, X, PauseCircle, RefreshCw, Pencil, Lock, Minimize2, Unlock,
 } from 'lucide-react'
 import type { DocumentPage, Screen, VaultDocument } from './domain/types'
 import { documentsRepository } from './services/documentRepository'
 import { cancelProcessing, processDocument, resumePendingProcessing, retryProcessing } from './services/processingQueue'
 import { filesToPages, nativeScansToPages } from './services/scannerService'
-import { downloadPdf as downloadPdfFile, openDownloadedPdf, passwordProtectPdf, removePdfPassword, sharePdf as sharePdfFile } from './services/pdfService'
+import { downloadCompressedPdf, downloadPdf as downloadPdfFile, openDownloadedPdf, passwordProtectPdf, removePdfPassword, sharePdf as sharePdfFile, type PdfCompressionLevel } from './services/pdfService'
 import { ScanPageEditor } from './features/scanner/components/ScanPageEditor'
 import { ScannerLab } from './features/scanner/components/ScannerLab'
 import { documentStorageService } from './services/documentStorageService'
-import { searchService, pageMatches, type DocumentSearchResult, type SmartSearchFilter } from './services/searchService'
+import { searchService, pageMatches, parseAdvancedQuery, type DocumentSearchResult, type SmartSearchFilter } from './services/searchService'
 import { ZoomablePage } from './features/viewer/components/ZoomablePage'
 import { checkDocumentStorage } from './services/storageHealthService'
 import { InAppCamera } from './features/scanner/components/InAppCamera'
@@ -25,6 +25,13 @@ import { defaultCorners } from './features/scanner/processing/edgeDetection'
 import { backgroundProcessingService } from './services/backgroundProcessingService'
 import { backupService } from './services/backupService'
 import { appLockService } from './services/appLockService'
+import { pdfImportService } from './services/pdfImportService'
+import { combineDocuments, extractPages } from './services/documentOperationsService'
+import { CombineDocumentsSheet } from './features/library/components/CombineDocumentsSheet'
+import { PageExtractSheet } from './features/viewer/components/PageExtractSheet'
+import { CompressionSheet } from './features/viewer/components/CompressionSheet'
+import { TagEditorSheet } from './features/viewer/components/TagEditorSheet'
+import { BulkActionBar, BulkOrganizeSheet, type BulkEditMode } from './features/library/components/BulkDocumentTools'
 
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
 const statusLabel = (doc: VaultDocument) => {
@@ -87,33 +94,62 @@ function App() {
     }
     open({ name: 'viewer', id, page, query: documentQuery })
   }
+  const saveNewDocument = async (doc: VaultDocument) => {
+    await documentsRepository.save(doc)
+    setDocuments(current => [doc, ...current.filter(item => item.id !== doc.id)])
+    setSearchResults(current => [{ document: doc, score: 0, pageMatches: [] }, ...current.filter(result => result.document.id !== doc.id)])
+    open({ name: 'viewer', id: doc.id })
+    window.setTimeout(() => void processDocument(doc.id, updateDocument).catch(async error => {
+      console.error('[processing] Deferred document processing failed', error)
+      const latest = await documentsRepository.get(doc.id)
+      if (latest) updateDocument(latest)
+    }), 0)
+  }
+  const importPdf = async () => {
+    const imported = await pdfImportService.pick()
+    if (imported.cancelled) return
+    const now = new Date().toISOString()
+    await saveNewDocument({ id: crypto.randomUUID(), title: imported.title, titleSource: 'manual', folder: 'Unfiled', createdAt: now, updatedAt: now, status: 'ocr_pending', processingStage: 'ocr', pages: imported.pages, tags: [] })
+  }
+  const combineSelectedDocuments = async (selected: VaultDocument[]) => {
+    if (selected.some(document => document.isPrivate)) await appLockService.authenticate()
+    await saveNewDocument(await combineDocuments(selected))
+  }
+  const bulkUpdateDocuments = async (ids: string[], action: { type: 'move' | 'tag' | 'privacy'; value: string | boolean }) => {
+    const selectedIds = new Set(ids)
+    const selected = documents.filter(document => selectedIds.has(document.id))
+    if (action.type === 'privacy') await appLockService.authenticate()
+    const now = new Date().toISOString()
+    const updated = selected.map(document => action.type === 'move'
+      ? { ...document, folder: String(action.value), updatedAt: now }
+      : action.type === 'tag'
+        ? { ...document, tags: document.tags.some(tag => tag.toLocaleLowerCase() === String(action.value).toLocaleLowerCase()) ? document.tags : [...document.tags, String(action.value)], updatedAt: now }
+        : { ...document, isPrivate: Boolean(action.value), updatedAt: now })
+    await Promise.all(updated.map(document => documentsRepository.save(document)))
+    const updates = new Map(updated.map(document => [document.id, document]))
+    setDocuments(current => current.map(document => updates.get(document.id) ?? document))
+    setSearchResults(current => current.map(result => updates.has(result.document.id) ? { ...result, document: updates.get(result.document.id)! } : result))
+  }
+  const bulkDeleteDocuments = async (ids: string[]) => {
+    await Promise.all(ids.map(id => documentsRepository.remove(id)))
+    const deleted = new Set(ids)
+    setDocuments(current => current.filter(document => !deleted.has(document.id)))
+    setSearchResults(current => current.filter(result => !deleted.has(result.document.id)))
+  }
 
   if (lockState !== 'unlocked') return <AppLockScreen checking={lockState === 'checking'} onUnlock={() => void unlock()} />
 
-  if (screen.name === 'capture') return <CaptureScreen onClose={() => open({ name: 'home' })} onSave={async doc => {
-    console.info('[capture] saving document', { documentId: doc.id, pageCount: doc.pages.length })
-    await documentsRepository.save(doc)
-    console.info('[capture] document persisted; opening viewer', { documentId: doc.id })
-    setDocuments(current => [doc, ...current])
-    open({ name: 'viewer', id: doc.id })
-    window.setTimeout(() => {
-      void processDocument(doc.id, updateDocument).catch(async error => {
-        console.error('[processing] Deferred document processing failed', error)
-        const latest = await documentsRepository.get(doc.id)
-        if (latest) updateDocument(latest)
-      })
-    }, 0)
-  }} />
+  if (screen.name === 'capture') return <CaptureScreen onClose={() => open({ name: 'home' })} onSave={saveNewDocument} />
   if (screen.name === 'scanner-lab') return <ScannerLab onBack={() => open({ name: 'settings' })} />
 
   if (screen.name === 'viewer') {
     const document = documents.find(item => item.id === screen.id)
-    return document ? <Viewer document={document} initialPage={screen.page} initialQuery={screen.query} onBack={() => open({ name: 'home' })} onChange={async updated => { await documentsRepository.save(updated); updateDocument(updated) }} onDelete={async () => { await documentsRepository.remove(screen.id); await refresh(); open({ name: 'home' }) }} /> : <EmptyLoading />
+    return document ? <Viewer document={document} initialPage={screen.page} initialQuery={screen.query} onBack={() => open({ name: 'home' })} onChange={async updated => { await documentsRepository.save(updated); updateDocument(updated) }} onCreate={saveNewDocument} onDelete={async () => { await documentsRepository.remove(screen.id); await refresh(); open({ name: 'home' }) }} /> : <EmptyLoading />
   }
 
   return <div className="app-shell">
     <main className="content">
-      {screen.name === 'home' && <Library documents={searchResults.map(result => result.document)} searchResults={searchResults} query={query} setQuery={setQuery} searchFilter={searchFilter} setSearchFilter={setSearchFilter} loading={loading} onScan={() => open({ name: 'capture' })} onOpen={(id, page) => void openDocument(id, page, query)} />}
+      {screen.name === 'home' && <Library documents={searchResults.map(result => result.document)} searchResults={searchResults} query={query} setQuery={setQuery} searchFilter={searchFilter} setSearchFilter={setSearchFilter} loading={loading} onScan={() => open({ name: 'capture' })} onImport={importPdf} onCombine={combineSelectedDocuments} onBulkUpdate={bulkUpdateDocuments} onBulkDelete={bulkDeleteDocuments} onOpen={(id, page) => void openDocument(id, page, parseAdvancedQuery(query).text)} />}
       {screen.name === 'folders' && <Folders documents={documents} onOpen={id => void openDocument(id)} />}
       {screen.name === 'settings' && <SettingsScreen onOpenScannerLab={() => open({ name: 'scanner-lab' })} />}
     </main>
@@ -127,8 +163,31 @@ function App() {
 }
 
 const SEARCH_FILTERS: { id: SmartSearchFilter; label: string }[] = [{ id: 'all', label: 'All' }, { id: 'this_month', label: 'This month' }, { id: 'bills', label: 'Bills' }, { id: 'invoices', label: 'Invoices' }, { id: 'receipts', label: 'Receipts' }, { id: 'prescriptions', label: 'Prescriptions' }, { id: 'statements', label: 'Statements' }, { id: 'needs_attention', label: 'Needs attention' }]
-function Library({ documents, searchResults, query, setQuery, searchFilter, setSearchFilter, loading, onScan, onOpen }: { documents: VaultDocument[]; searchResults: DocumentSearchResult[]; query: string; setQuery: (value: string) => void; searchFilter: SmartSearchFilter; setSearchFilter: (value: SmartSearchFilter) => void; loading: boolean; onScan: () => void; onOpen: (id: string, page?: number) => void }) {
+function Library({ documents, searchResults, query, setQuery, searchFilter, setSearchFilter, loading, onScan, onImport, onCombine, onBulkUpdate, onBulkDelete, onOpen }: { documents: VaultDocument[]; searchResults: DocumentSearchResult[]; query: string; setQuery: (value: string) => void; searchFilter: SmartSearchFilter; setSearchFilter: (value: SmartSearchFilter) => void; loading: boolean; onScan: () => void; onImport: () => Promise<void>; onCombine: (documents: VaultDocument[]) => Promise<void>; onBulkUpdate: (ids: string[], action: { type: 'move' | 'tag' | 'privacy'; value: string | boolean }) => Promise<void>; onBulkDelete: (ids: string[]) => Promise<void>; onOpen: (id: string, page?: number) => void }) {
   const resultsById = useMemo(() => new Map(searchResults.map(result => [result.document.id, result])), [searchResults])
+  const highlightQuery = useMemo(() => parseAdvancedQuery(query).text, [query])
+  const [importing, setImporting] = useState(false), [importError, setImportError] = useState(''), [combining, setCombining] = useState(false)
+  const [selecting, setSelecting] = useState(false), [selectedIds, setSelectedIds] = useState<string[]>([]), [bulkMode, setBulkMode] = useState<BulkEditMode | null>(null)
+  const [bulkBusy, setBulkBusy] = useState(false), [bulkError, setBulkError] = useState(''), [searchHelp, setSearchHelp] = useState(false)
+  const closeCombine = useCallback(() => setCombining(false), [])
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const selectedDocuments = useMemo(() => documents.filter(document => selectedIdSet.has(document.id)), [documents, selectedIdSet])
+  const clearSelection = useCallback(() => { setSelecting(false); setSelectedIds([]); setBulkMode(null); setBulkError('') }, [])
+  const toggleSelected = (id: string) => setSelectedIds(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id])
+  const applyBulk = async (type: 'move' | 'tag' | 'privacy', value: string | boolean) => {
+    setBulkBusy(true); setBulkError('')
+    try { await onBulkUpdate(selectedIds, { type, value }); clearSelection() }
+    catch (error) { setBulkError(error instanceof Error ? error.message : 'Could not update the selected documents.') }
+    finally { setBulkBusy(false) }
+  }
+  const deleteBulk = async () => {
+    if (!confirm(`Delete ${selectedIds.length} selected documents from this device?`)) return
+    setBulkBusy(true); setBulkError('')
+    try { await onBulkDelete(selectedIds); clearSelection() }
+    catch { setBulkError('Could not delete all selected documents.') }
+    finally { setBulkBusy(false) }
+  }
+  const importPdf = async () => { setImporting(true); setImportError(''); try { await onImport() } catch (error) { setImportError(error instanceof Error ? error.message : 'Could not import this PDF.') } finally { setImporting(false) } }
   return <>
     <header className="home-header">
       <div className="brand-mark"><Archive size={22} /></div>
@@ -139,28 +198,36 @@ function Library({ documents, searchResults, query, setQuery, searchFilter, setS
       <div className="eyebrow">Your private document cabinet</div>
       <h2>Find any paper,<br /><em>right when you need it.</em></h2>
       <p>Scan, organise and search every document. Nothing leaves this device.</p>
-      <button className="primary-button" onClick={onScan}><Camera /><span>Scan a document</span></button>
+      <div className="hero-actions"><button className="primary-button" onClick={onScan}><Camera /><span>Scan a document</span></button><button className="import-pdf-button" disabled={importing} onClick={() => void importPdf()}>{importing ? <span className="button-spinner" /> : <FileUp />}<span>{importing ? 'Importing locally…' : 'Import PDF'}</span></button></div>
+      {importError && <p className="hero-error" role="alert">{importError}</p>}
     </section>
-    <div className="search-field"><Search size={20} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search names, text, amounts or numbers" aria-label="Search documents" />{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={18} /></button>}</div>
+    <div className="search-field"><Search size={20} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search text or use filters" aria-label="Search documents" />{query ? <button onClick={() => setQuery('')} aria-label="Clear search"><X size={18} /></button> : null}<button onClick={() => setSearchHelp(open => !open)} aria-label="Advanced search help" aria-expanded={searchHelp}><CircleHelp size={18} /></button></div>
+    {searchHelp ? <aside className="search-help"><strong>Advanced search</strong><span>Combine normal words with filters:</span><div>{['type:invoice', 'folder:"Tax records"', 'tag:important', 'amount:>5000', 'after:2026-01', 'private:true'].map(example => <button key={example} onClick={() => setQuery(normaliseQuery(`${query} ${example}`))}>{example}</button>)}</div></aside> : null}
     <div className="smart-filter-strip" aria-label="Document filters">{SEARCH_FILTERS.map(filter => <button key={filter.id} className={searchFilter === filter.id ? 'active' : ''} aria-pressed={searchFilter === filter.id} onClick={() => setSearchFilter(filter.id)}>{filter.label}</button>)}</div>
     <section className="section-block">
-      <div className="section-heading"><div><span>{query || searchFilter !== 'all' ? 'Matching documents' : 'Recent documents'}</span><small>{documents.length} {documents.length === 1 ? 'document' : 'documents'}</small></div>{searchFilter !== 'all' && <button onClick={() => setSearchFilter('all')}>Clear filter</button>}</div>
-      {loading ? <EmptyLoading /> : documents.length ? <div className="document-list">{documents.map(document => { const match = resultsById.get(document.id)?.pageMatches[0]; return <DocumentRow key={document.id} document={document} match={match} query={query} onClick={() => onOpen(document.id, match?.pageIndex)} /> })}</div> : <EmptyLibrary onScan={onScan} searching={Boolean(query || searchFilter !== 'all')} />}
+      <div className="section-heading"><div><span>{selecting ? `${selectedIds.length} selected` : query || searchFilter !== 'all' ? 'Matching documents' : 'Recent documents'}</span><small>{documents.length} {documents.length === 1 ? 'document' : 'documents'}</small></div><div className="section-tools">{selecting ? <button onClick={clearSelection}>Cancel</button> : <>{searchFilter !== 'all' ? <button onClick={() => setSearchFilter('all')}>Clear filter</button> : null}{documents.length >= 2 ? <button onClick={() => setCombining(true)}><Files /> Combine</button> : null}{documents.length ? <button onClick={() => setSelecting(true)}><Check /> Select</button> : null}</>}</div></div>
+      {loading ? <EmptyLoading /> : documents.length ? <div className={`document-list${selecting ? ' selecting' : ''}`}>{documents.map(document => { const match = resultsById.get(document.id)?.pageMatches[0]; return <DocumentRow key={document.id} document={document} match={match} query={highlightQuery} selecting={selecting} selected={selectedIdSet.has(document.id)} onClick={() => selecting ? toggleSelected(document.id) : onOpen(document.id, match?.pageIndex)} /> })}</div> : <EmptyLibrary onScan={onScan} searching={Boolean(query || searchFilter !== 'all')} />}
     </section>
     <div className="privacy-note"><LockKeyhole size={18} /><div><strong>Private by design</strong><span>Your files and searches stay entirely on this device.</span></div></div>
+    {combining && <CombineDocumentsSheet documents={documents} onClose={closeCombine} onCombine={onCombine} />}
+    {selecting && selectedIds.length > 0 ? <BulkActionBar count={selectedIds.length} busy={bulkBusy} error={bulkError} allPrivate={selectedDocuments.every(document => document.isPrivate)} onMove={() => setBulkMode('move')} onTag={() => setBulkMode('tag')} onPrivacy={() => void applyBulk('privacy', !selectedDocuments.every(document => document.isPrivate))} onDelete={() => void deleteBulk()} onCancel={clearSelection} /> : null}
+    {bulkMode ? <BulkOrganizeSheet mode={bulkMode} count={selectedIds.length} busy={bulkBusy} error={bulkError} onClose={() => setBulkMode(null)} onApply={value => void applyBulk(bulkMode, value)} /> : null}
   </>
 }
+
+const normaliseQuery = (value: string) => value.replace(/\s+/g, ' ').trim()
 
 function HighlightedText({ text, query }: { text: string; query: string }) {
   const terms = query.trim().split(/\s+/).filter(Boolean), lowerTerms = new Set(terms.map(term => term.toLocaleLowerCase()))
   return <>{text.split(/(\s+)/).map((part, index) => lowerTerms.has(part.replace(/[^\p{L}\p{N}]/gu, '').toLocaleLowerCase()) ? <mark key={index}>{part}</mark> : part)}</>
 }
-function DocumentRow({ document, match, query = '', onClick }: { document: VaultDocument; match?: DocumentSearchResult['pageMatches'][number]; query?: string; onClick: () => void }) {
-  return <button className="document-row" onClick={onClick}>
+function DocumentRow({ document, match, query = '', selecting = false, selected = false, onClick }: { document: VaultDocument; match?: DocumentSearchResult['pageMatches'][number]; query?: string; selecting?: boolean; selected?: boolean; onClick: () => void }) {
+  return <button className={`document-row${selected ? ' selected' : ''}`} onClick={onClick} aria-pressed={selecting ? selected : undefined}>
     {match && !document.isPrivate && <span className="match-page-badge">Page {match.pageIndex + 1}</span>}
+    {selecting ? <span className="row-selector">{selected ? <Check /> : null}</span> : null}
     <div className={`doc-thumb${document.isPrivate ? ' private' : ''}`}>{document.isPrivate ? <Lock /> : document.pages[0]?.thumbnailUrl || document.pages[0]?.imageUrl ? <img src={document.pages[0].thumbnailUrl || document.pages[0].imageUrl} alt="" /> : <FileText />}</div>
     <div className="doc-main"><strong>{document.isPrivate ? 'Private document' : document.title}</strong><span>{formatDate(document.createdAt)} · {document.pages.length} {document.pages.length === 1 ? 'page' : 'pages'}{document.isPrivate ? ' · Locked' : ''}</span>{match && !document.isPrivate ? <span className="search-snippet"><HighlightedText text={match.snippet} query={query} /></span> : <small className={document.status === 'error' ? 'status error' : 'status'}><i />{document.isPrivate ? 'Authenticate to open' : statusLabel(document)}</small>}</div>
-    <ChevronRight className="row-arrow" size={20} />
+    {selecting ? null : <ChevronRight className="row-arrow" size={20} />}
   </button>
 }
 
@@ -307,7 +374,7 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
   </div>
 }
 
-function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange, onDelete }: { document: VaultDocument; initialPage?: number; initialQuery?: string; onBack: () => void; onChange: (doc: VaultDocument) => Promise<void>; onDelete: () => void }) {
+function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange, onCreate, onDelete }: { document: VaultDocument; initialPage?: number; initialQuery?: string; onBack: () => void; onChange: (doc: VaultDocument) => Promise<void>; onCreate: (doc: VaultDocument) => Promise<void>; onDelete: () => void }) {
   const [page, setPage] = useState(Math.min(Math.max(initialPage, 0), Math.max(0, document.pages.length - 1)))
   const [editing, setEditing] = useState(false)
   const [searchOpen, setSearchOpen] = useState(Boolean(initialQuery))
@@ -319,12 +386,14 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
   const [shareState, setShareState] = useState<'idle' | 'working' | 'error'>('idle')
   const [jobAction, setJobAction] = useState<'idle' | 'working'>('idle')
   const [actionsOpen, setActionsOpen] = useState(false)
-  const [actionView, setActionView] = useState<'main' | 'folder' | 'password' | 'private'>('main')
+  const [actionView, setActionView] = useState<'main' | 'folder' | 'password' | 'private' | 'extract' | 'compress' | 'tags'>('main')
   const [customFolder, setCustomFolder] = useState('')
   const [pdfPassword, setPdfPassword] = useState('')
   const [pdfPasswordConfirm, setPdfPasswordConfirm] = useState('')
   const [actionBusy, setActionBusy] = useState(false)
   const [actionError, setActionError] = useState('')
+  const [compressionLevel, setCompressionLevel] = useState<PdfCompressionLevel>('balanced')
+  const [compressionMessage, setCompressionMessage] = useState('')
   const current = document.pages[page]
   const detectedCodes = useMemo(() => document.pages.flatMap(item => item.barcodes ?? []), [document.pages])
   const matches = useMemo(() => pageMatches(document, withinQuery), [document, withinQuery])
@@ -346,7 +415,7 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
     setActiveMatchIndex(next); setPage(matches[next].pageIndex)
   }
   const saveTitle = () => { const trimmed = title.trim(); if (trimmed) onChange({ ...document, title: trimmed, titleSource: 'manual', updatedAt: new Date().toISOString() }); setEditing(false) }
-  const closeActions = () => { setActionsOpen(false); setActionView('main'); setCustomFolder(''); setPdfPassword(''); setPdfPasswordConfirm(''); setActionError('') }
+  const closeActions = () => { setActionsOpen(false); setActionView('main'); setCustomFolder(''); setPdfPassword(''); setPdfPasswordConfirm(''); setActionError(''); setCompressionMessage('') }
   const updateMetadata = async (changes: Partial<Pick<VaultDocument, 'folder' | 'isPrivate'>>) => {
     setActionBusy(true); setActionError('')
     try { await onChange({ ...document, ...changes, updatedAt: new Date().toISOString() }); closeActions() }
@@ -375,6 +444,25 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
     setActionBusy(true); setActionError('')
     try { const updated = await removePdfPassword(document); await onChange(updated); closeActions() }
     catch (error) { setActionError(error instanceof Error ? error.message : 'Could not remove PDF password protection.') }
+    finally { setActionBusy(false) }
+  }
+  const extractSelectedPages = async (indexes: number[]) => {
+    setActionBusy(true); setActionError('')
+    try { await onCreate(await extractPages(document, indexes)) }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'Could not extract these pages.'); setActionBusy(false) }
+  }
+  const compressPdf = async () => {
+    setActionBusy(true); setActionError(''); setCompressionMessage('')
+    try {
+      const result = await downloadCompressedPdf(document, compressionLevel)
+      setCompressionMessage(`Saved ${Math.max(.1, result.bytes / 1024 / 1024).toFixed(1)} MB copy to Downloads · LOCAL`)
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not compress this PDF.') }
+    finally { setActionBusy(false) }
+  }
+  const saveTags = async (tags: string[]) => {
+    setActionBusy(true); setActionError('')
+    try { await onChange({ ...document, tags, updatedAt: new Date().toISOString() }); closeActions() }
+    catch { setActionError('Could not save these tags. Please try again.') }
     finally { setActionBusy(false) }
   }
   const highlights = activeMatch?.pageIndex === page ? activeMatch.wordIndexes.flatMap(index => current.ocrWords?.[index]?.boundingBox ?? []) : []
@@ -426,6 +514,7 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
     <header className="top-bar"><button onClick={onBack} aria-label="Back"><ArrowLeft /></button><div>{editing ? <input className="title-edit" value={title} onChange={event => setTitle(event.target.value)} onBlur={saveTitle} onKeyDown={event => event.key === 'Enter' && saveTitle()} autoFocus /> : <><strong>{document.isPrivate && <Lock size={13} />} {document.title}</strong><span>{document.folder} · {document.pages.length} pages</span></>}</div><button onClick={() => setActionsOpen(true)} aria-label="More actions" aria-haspopup="dialog"><MoreHorizontal /></button></header>
     <div className={`processing-banner ${document.status === 'error' ? 'has-error' : ''}`}><Clock3 size={17} /><span>{statusLabel(document)}</span>{document.status === 'indexed' && <Check size={17} />}{(document.status === 'ocr_pending' || document.status === 'ocr_processing') && <button disabled={jobAction === 'working'} onClick={() => { setJobAction('working'); void cancelProcessing(document.id, updated => { onChange(updated); setJobAction('idle') }) }}><PauseCircle /> Pause</button>}{(document.status === 'error' || document.status === 'saved') && (document.processingStage === 'pdf' || document.pages.some(item => item.ocrState !== 'complete')) && <button disabled={jobAction === 'working'} onClick={() => { setJobAction('working'); void retryProcessing(document.id, updated => { onChange(updated); if (updated.status === 'indexed' || updated.status === 'error') setJobAction('idle') }) }}><RefreshCw /> {document.processingStage === 'pdf' ? 'Retry PDF' : 'Retry OCR'}</button>}<button onClick={() => setSearchOpen(open => !open)}><Search /> Search text</button></div>
     {searchOpen && <div className="viewer-search"><Search /><input value={withinQuery} onChange={event => setWithinQuery(event.target.value)} placeholder="Search this document" aria-label="Search this document" autoFocus /><span>{withinQuery ? matches.length ? `${activeMatchIndex + 1}/${matches.length}` : '0' : ''}</span><button onClick={() => moveMatch(-1)} disabled={!matches.length} aria-label="Previous match"><ChevronUp /></button><button onClick={() => moveMatch(1)} disabled={!matches.length} aria-label="Next match"><ChevronDown /></button><button onClick={() => { setWithinQuery(''); setSearchOpen(false) }} aria-label="Close search"><X /></button></div>}
+    {document.tags.length > 0 && <div className="viewer-tags" aria-label="Document tags">{document.tags.map(tag => <span key={tag}><Tag />{tag}</span>)}</div>}
     {detectedCodes.length > 0 && <div className="code-index-banner"><ScanLine /><strong>{detectedCodes.length} {detectedCodes.length === 1 ? 'code' : 'codes'} indexed</strong><span>{detectedCodes[0].displayValue || detectedCodes[0].rawValue}</span></div>}
     <section className="document-canvas">{current && <ZoomablePage key={current.id} src={current.imageUrl} alt={`Page ${page + 1}`} rotation={current.rotation} highlights={highlights} />}{activeMatch?.pageIndex === page && <div className="viewer-match"><b>Page {page + 1}</b><span><HighlightedText text={activeMatch.snippet} query={withinQuery} /></span></div>}</section>
     <section className="thumbnail-strip" aria-label="Pages">{document.pages.map((item, index) => <button key={item.id} className={index === page ? 'active' : ''} onClick={() => setPage(index)}><img src={item.imageUrl} alt={`Page ${index + 1}`} /><span>{index + 1}</span></button>)}</section>
@@ -444,6 +533,9 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
             <button onClick={() => { closeActions(); setEditingPage(true) }}><Crop /><span><strong>Crop this page</strong><small>Adjust the borders of page {page + 1}</small></span><ChevronRight /></button>
             <button onClick={() => { closeActions(); setEditing(true) }}><Pencil /><span><strong>Rename</strong><small>Change the document name</small></span><ChevronRight /></button>
             <button onClick={() => setActionView('folder')}><FolderOpen /><span><strong>Move to folder</strong><small>Currently in {document.folder}</small></span><ChevronRight /></button>
+            <button onClick={() => setActionView('tags')}><Tag /><span><strong>Manage tags</strong><small>{document.tags.length ? document.tags.join(', ') : 'Add searchable labels'}</small></span><ChevronRight /></button>
+            {document.pages.length > 1 && <button onClick={() => setActionView('extract')}><Copy /><span><strong>Extract pages</strong><small>Create a separate document from selected pages</small></span><ChevronRight /></button>}
+            <button onClick={() => setActionView('compress')}><Minimize2 /><span><strong>Compress PDF</strong><small>Download a smaller sharing copy</small></span><ChevronRight /></button>
             <button disabled={actionBusy} onClick={() => void togglePrivacy()}>{document.isPrivate ? <Unlock /> : <Lock />}<span><strong>{document.isPrivate ? 'Remove private lock' : 'Make private'}</strong><small>{document.isPrivate ? 'Stop requiring document-level authentication' : 'Lock access inside LOCAL and hide previews'}</small></span><ChevronRight /></button>
             <button onClick={() => setActionView('password')}><ShieldCheck /><span><strong>{document.pdfPasswordProtected ? 'Change PDF password' : 'Add PDF password'}</strong><small>{document.pdfPasswordProtected ? 'AES-256 protection is enabled' : 'Protect Downloads and shared copies'}</small></span><ChevronRight /></button>
             <button className="danger" onClick={() => { closeActions(); if (confirm('Delete this document from this device?')) onDelete() }}><Trash2 /><span><strong>Delete document</strong><small>Remove it permanently from this device</small></span><ChevronRight /></button>
@@ -452,7 +544,10 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
           <header><button onClick={() => setActionView('main')} aria-label="Back"><ArrowLeft /></button><div><strong>Move to folder</strong><span>Choose where this document belongs</span></div><button onClick={closeActions} aria-label="Close"><X /></button></header>
           <div className="folder-options">{['Unfiled', 'Office', 'Personal', 'Receipts', 'Legal'].map(folder => <button key={folder} className={document.folder === folder ? 'selected' : ''} disabled={actionBusy} onClick={() => void updateMetadata({ folder })}><Folder /> <span>{folder}</span>{document.folder === folder && <Check />}</button>)}</div>
           <form className="custom-folder" onSubmit={event => { event.preventDefault(); const folder = customFolder.trim(); if (folder) void updateMetadata({ folder }) }}><label htmlFor="custom-folder-name">New folder</label><div><input id="custom-folder-name" value={customFolder} onChange={event => setCustomFolder(event.target.value)} placeholder="Enter folder name" maxLength={48} /><button disabled={actionBusy || !customFolder.trim()}><Check /> Move</button></div></form>
-        </> : actionView === 'private' ? <>
+        </> : actionView === 'tags' ? <TagEditorSheet initialTags={document.tags} busy={actionBusy} error={actionError} onClose={closeActions} onSave={tags => void saveTags(tags)} />
+        : actionView === 'extract' ? <PageExtractSheet document={document} initialPage={page} busy={actionBusy} error={actionError} onClose={closeActions} onExtract={indexes => void extractSelectedPages(indexes)} />
+        : actionView === 'compress' ? <CompressionSheet selected={compressionLevel} busy={actionBusy} message={compressionMessage} error={actionError} onSelect={setCompressionLevel} onClose={closeActions} onCompress={() => void compressPdf()} />
+        : actionView === 'private' ? <>
           <header><div><strong>Private lock enabled</strong><span>This document now requires device authentication in LOCAL</span></div><button onClick={closeActions} aria-label="Close"><X /></button></header>
           <div className="privacy-level-card"><Lock /><strong>Protected inside LOCAL</strong><p>The title and preview are hidden. Add a PDF password as well if downloaded and shared copies must remain protected.</p><button onClick={() => setActionView('password')}><ShieldCheck /> Add PDF password</button><button className="quiet" onClick={closeActions}>Done</button></div>
         </> : <>

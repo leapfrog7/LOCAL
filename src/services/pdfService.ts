@@ -1,7 +1,7 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { Share } from '@capacitor/share'
 import type { DocumentPage, VaultDocument } from '../domain/types'
-import type { PdfService } from './contracts'
+import type { PdfRenderOptions, PdfService } from './contracts'
 import { documentStorageService } from './documentStorageService'
 
 const loadImage = (source: string) => new Promise<HTMLImageElement>((resolve, reject) => {
@@ -33,7 +33,7 @@ export function addOcrTextLayer(pdf: PdfTextLayer, page: DocumentPage, width: nu
 }
 
 export const pdfService: PdfService = {
-  async create(vaultDocument) {
+  async create(vaultDocument, options: PdfRenderOptions = {}) {
     if (!vaultDocument.pages.length) throw new Error('This document has no pages.')
     const { jsPDF } = await import('jspdf')
     let pdf: InstanceType<typeof jsPDF> | undefined
@@ -41,8 +41,11 @@ export const pdfService: PdfService = {
     for (const [index, page] of vaultDocument.pages.entries()) {
       const image = await loadImage(page.imageUrl)
       const sideways = page.rotation % 180 !== 0
-      const width = sideways ? image.height : image.width
-      const height = sideways ? image.width : image.height
+      const naturalWidth = sideways ? image.height : image.width
+      const naturalHeight = sideways ? image.width : image.height
+      const scale = options.maxPageDimension ? Math.min(1, options.maxPageDimension / Math.max(naturalWidth, naturalHeight)) : 1
+      const width = Math.max(1, Math.round(naturalWidth * scale))
+      const height = Math.max(1, Math.round(naturalHeight * scale))
       const orientation = width > height ? 'landscape' : 'portrait'
       if (!pdf) pdf = new jsPDF({ orientation, unit: 'px', format: [width, height], hotfixes: ['px_scaling'] })
       else pdf.addPage([width, height], orientation)
@@ -54,8 +57,8 @@ export const pdfService: PdfService = {
       if (!context) throw new Error('PDF generation is unavailable on this device.')
       context.translate(width / 2, height / 2)
       context.rotate(page.rotation * Math.PI / 180)
-      context.drawImage(image, -image.width / 2, -image.height / 2)
-      pdf.addImage(canvas.toDataURL('image/jpeg', 0.88), 'JPEG', 0, 0, width, height, `page-${index}`, 'FAST')
+      context.drawImage(image, -image.width * scale / 2, -image.height * scale / 2, image.width * scale, image.height * scale)
+      pdf.addImage(canvas.toDataURL('image/jpeg', options.jpegQuality ?? 0.88), 'JPEG', 0, 0, width, height, `page-${index}`, 'FAST')
       addOcrTextLayer(pdf, page, width, height)
     }
     return pdf!.output('blob')
@@ -70,6 +73,31 @@ export async function persistSearchablePdf(vaultDocument: VaultDocument): Promis
 
 async function ensurePersistedPdf(vaultDocument: VaultDocument) {
   return vaultDocument.pdfPath ? vaultDocument : persistSearchablePdf(vaultDocument)
+}
+
+export type PdfCompressionLevel = 'high-quality' | 'balanced' | 'small'
+export const PDF_COMPRESSION: Record<PdfCompressionLevel, { label: string; description: string; jpegQuality: number; maxPageDimension: number }> = {
+  'high-quality': { label: 'High quality', description: 'Clear text with a modest size reduction', jpegQuality: .82, maxPageDimension: 2400 },
+  balanced: { label: 'Balanced', description: 'Good for email and everyday sharing', jpegQuality: .66, maxPageDimension: 1800 },
+  small: { label: 'Small size', description: 'Strong compression for messaging apps', jpegQuality: .48, maxPageDimension: 1280 },
+}
+
+export async function downloadCompressedPdf(vaultDocument: VaultDocument, level: PdfCompressionLevel) {
+  const settings = PDF_COMPRESSION[level]
+  const blob = await pdfService.create(vaultDocument, settings)
+  const filename = safeFilename(`${vaultDocument.title} - compressed`)
+  if (!Capacitor.isNativePlatform()) {
+    const url = URL.createObjectURL(blob)
+    const anchor = window.document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1500)
+    return { bytes: blob.size, filename }
+  }
+  const path = await documentStorageService.persistTemporaryPdf(blob)
+  try {
+    if (!path) throw new Error('Could not prepare the compressed PDF.')
+    await nativePdfDownload.savePdf({ sourcePath: path, filename })
+    return { bytes: blob.size, filename }
+  } finally { await documentStorageService.removeFile(path) }
 }
 
 export async function passwordProtectPdf(vaultDocument: VaultDocument, password: string): Promise<VaultDocument> {

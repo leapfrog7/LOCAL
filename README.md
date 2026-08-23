@@ -44,6 +44,10 @@ Android Studio and an Android SDK are required to build the APK.
 - Background OCR that survives activity recreation, with immediate PDF access and bounded retries
 - Smart on-device titles and metadata extraction for common receipts, bills, letters, and office documents
 - Document viewer, folder browser, rename, deletion, post-save crop correction, and one-tap PDF export
+- Native import of existing PDFs into the same local OCR and search pipeline
+- Ordered document combining, selected-page extraction, and three-level PDF compression
+- Multi-select move, tag, privacy, and delete actions
+- Searchable document tags and structured filters for type, folder, tag, organization, privacy, date, and amount
 - On-device scanned-page PDF generation with page rotation preserved
 - Browser download and native Android save/share sheet
 - App and document-level biometric locking with hidden private previews
