@@ -40,7 +40,7 @@ jobs:
           test -n "$RELEASE_KEYSTORE_BASE64"
           printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/LOCAL-release.jks"
           chmod 600 "$RUNNER_TEMP/LOCAL-release.jks"
-      - name: Build minified signed APK and AAB
+      - name: Build minified signed APK
         working-directory: android
         env:
           LOCAL_RELEASE_STORE_FILE: ${{ runner.temp }}/LOCAL-release.jks
@@ -48,7 +48,7 @@ jobs:
           LOCAL_RELEASE_KEY_ALIAS: ${{ secrets.LOCAL_RELEASE_KEY_ALIAS }}
           LOCAL_RELEASE_KEY_PASSWORD: ${{ secrets.LOCAL_RELEASE_KEY_PASSWORD }}
           LOCAL_VERSION_CODE: ${{ vars.LOCAL_VERSION_CODE }}
-        run: bash gradlew lintRelease testReleaseUnitTest assembleRelease bundleRelease
+        run: bash gradlew lintRelease testReleaseUnitTest assembleRelease
       - name: Verify and name artifacts
         env:
           TAG_NAME: ${{ inputs.tag || github.ref_name }}
@@ -56,13 +56,11 @@ jobs:
           VERSION="${TAG_NAME#v}"
           test "$VERSION" = "$(node -p "require('./package.json').version")"
           APK=android/app/build/outputs/apk/release/app-release.apk
-          AAB=android/app/build/outputs/bundle/release/app-release.aab
-          test -f "$APK" && test -f "$AAB"
+          test -f "$APK"
           "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner" verify --verbose --print-certs "$APK"
           mkdir -p release-artifacts
           cp "$APK" "release-artifacts/LOCAL-$VERSION.apk"
           cp "$APK" release-artifacts/LOCAL-latest.apk
-          cp "$AAB" "release-artifacts/LOCAL-$VERSION.aab"
           (cd release-artifacts && sha256sum * > SHA256SUMS.txt)
       - name: Publish GitHub Release
         env:
