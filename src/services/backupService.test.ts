@@ -14,4 +14,10 @@ describe('encrypted LOCAL backups', () => {
     const encrypted = await encryptBackupPayload(payload, 'correct horse battery staple')
     await expect(decryptBackupPayload(encrypted, 'incorrect password')).rejects.toThrow('could not be unlocked')
   })
+
+  it('preserves empty folders in the current backup format', async () => {
+    const current = { format: 'local-backup-v2' as const, createdAt: '2026-08-22T00:00:00.000Z', documents: [], folders: ['Unfiled', 'Empty folder'] }
+    const encrypted = await encryptBackupPayload(current, 'correct horse battery staple')
+    await expect(decryptBackupPayload(encrypted, 'correct horse battery staple')).resolves.toEqual(current)
+  })
 })

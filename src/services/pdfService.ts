@@ -14,7 +14,7 @@ const loadImage = (source: string) => new Promise<HTMLImageElement>((resolve, re
 const safeFilename = (title: string) => `${title.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/\s+/g, ' ') || 'LOCAL document'}.pdf`
 type PdfDownloadPlugin = {
   savePdf(options: { sourcePath: string; filename: string }): Promise<{ location: string; uri: string }>
-  openPdf(): Promise<void>
+  openPdf(options?: { sourcePath?: string }): Promise<void>
   protectPdf(options: { sourcePath: string; password: string }): Promise<{ algorithm: 'AES-256' }>
 }
 const nativePdfDownload = registerPlugin<PdfDownloadPlugin>('PdfDownload')
@@ -136,6 +136,13 @@ export async function downloadPdf(vaultDocument: VaultDocument): Promise<VaultDo
 export async function openDownloadedPdf() {
   if (!Capacitor.isNativePlatform()) throw new Error('Open the PDF from your browser downloads.')
   await nativePdfDownload.openPdf()
+}
+
+export async function openPdfExternally(vaultDocument: VaultDocument): Promise<VaultDocument> {
+  if (!Capacitor.isNativePlatform()) throw new Error('Use your browser download to open this PDF in another app.')
+  const ready = await ensurePersistedPdf(vaultDocument)
+  await nativePdfDownload.openPdf({ sourcePath: ready.privatePdfPath ?? ready.pdfPath! })
+  return ready
 }
 
 export async function sharePdf(vaultDocument: VaultDocument): Promise<VaultDocument> {

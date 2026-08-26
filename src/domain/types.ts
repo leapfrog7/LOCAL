@@ -24,9 +24,23 @@ export interface DocumentPage {
   barcodes?: DetectedBarcode[]
 }
 
-export interface OCRBoundingBox { x: number; y: number; width: number; height: number }
-export interface OCRWord { text: string; confidence: number; boundingBox: OCRBoundingBox }
-export interface DetectedBarcode { rawValue: string; displayValue?: string; format: string; valueType: string }
+export interface OCRBoundingBox {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+export interface OCRWord {
+  text: string
+  confidence: number
+  boundingBox: OCRBoundingBox
+}
+export interface DetectedBarcode {
+  rawValue: string
+  displayValue?: string
+  format: string
+  valueType: string
+}
 
 export type RenderPreset = 'original' | 'auto' | 'clean-colour' | 'document' | 'grayscale' | 'black-white' | 'photocopy'
 export interface ProcessingAdjustments {
@@ -39,8 +53,16 @@ export interface ProcessingAdjustments {
   noiseReduction: number
 }
 export type PageProcessingState = 'captured' | 'detecting' | 'needs_review' | 'processing' | 'processed' | 'error'
-export interface Point { x: number; y: number }
-export interface PageCorners { topLeft: Point; topRight: Point; bottomRight: Point; bottomLeft: Point }
+export interface Point {
+  x: number
+  y: number
+}
+export interface PageCorners {
+  topLeft: Point
+  topRight: Point
+  bottomRight: Point
+  bottomLeft: Point
+}
 
 export interface VaultDocument {
   id: string
@@ -51,6 +73,7 @@ export interface VaultDocument {
   folder: string
   createdAt: string
   updatedAt: string
+  deletedAt?: string
   status: DocumentStatus
   pages: DocumentPage[]
   tags: string[]
@@ -71,8 +94,20 @@ export interface DocumentSmartMetadata {
   organization?: string
   documentDate?: string
   dateLabel?: string
-  amount?: { value: number; currency: 'INR' | 'USD' | 'EUR' | 'GBP'; display: string }
-  identifier?: { type: 'invoice' | 'bill' | 'receipt' | 'order' | 'reference' | 'policy'; value: string }
+  amount?: {
+    value: number
+    currency: 'INR' | 'USD' | 'EUR' | 'GBP'
+    display: string
+  }
+  identifier?: {
+    type: 'invoice' | 'bill' | 'receipt' | 'order' | 'reference' | 'policy'
+    value: string
+  }
 }
 
-export type Screen = { name: 'home' | 'folders' | 'actions' | 'settings' | 'scanner-lab' } | { name: 'viewer'; id: string; page?: number; query?: string } | { name: 'capture' }
+export type Screen =
+  | {
+      name: 'home' | 'folders' | 'actions' | 'settings' | 'trash' | 'scanner-lab'
+    }
+  | { name: 'viewer'; id: string; page?: number; query?: string }
+  | { name: 'capture' }

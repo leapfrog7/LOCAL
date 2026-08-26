@@ -27,15 +27,16 @@ async function transaction<T>(mode: IDBTransactionMode, action: (store: IDBObjec
 let nativeMigration: Promise<void> | undefined
 function ensureNativeMigration() {
   if (!sqliteRepository.available()) return Promise.resolve()
-  if (!nativeMigration) nativeMigration = (async () => {
-    if (await sqliteRepository.getSetting('indexeddb_metadata_migrated') === '1') return
-    const records = await transaction('readonly', store => store.getAll()) as VaultDocument[]
-    for (const record of records) {
-      const persisted = await documentStorageService.persist(record)
-      await sqliteRepository.save(documentStorageService.forMetadata(persisted))
-    }
-    await sqliteRepository.setSetting('indexeddb_metadata_migrated', '1')
-  })()
+  if (!nativeMigration)
+    nativeMigration = (async () => {
+      if ((await sqliteRepository.getSetting('indexeddb_metadata_migrated')) === '1') return
+      const records = (await transaction('readonly', (store) => store.getAll())) as VaultDocument[]
+      for (const record of records) {
+        const persisted = await documentStorageService.persist(record)
+        await sqliteRepository.save(documentStorageService.forMetadata(persisted))
+      }
+      await sqliteRepository.setSetting('indexeddb_metadata_migrated', '1')
+    })()
   return nativeMigration
 }
 
@@ -50,19 +51,30 @@ export const documentsRepository: DocumentRepository = {
   async list() {
     if (sqliteRepository.available()) {
       await ensureNativeMigration()
-      const records = await sqliteRepository.list(), documents: VaultDocument[] = []
+      const records = await sqliteRepository.list(),
+        documents: VaultDocument[] = []
       for (const record of records) documents.push(await documentStorageService.hydrate(await ensurePrivateStorage(record)))
-      return documents
+      return documents.filter((document) => !document.deletedAt)
     }
-    const records = await transaction('readonly', s => s.getAll()) as VaultDocument[]
+    const records = (await transaction('readonly', (s) => s.getAll())) as VaultDocument[]
     const documents: VaultDocument[] = []
     for (const record of records) {
-      const needsMigration = documentStorageService.usesNativeFiles() && record.pages.some(page => !page.imagePath && page.imageUrl.startsWith('data:'))
+      const needsMigration = documentStorageService.usesNativeFiles() && record.pages.some((page) => !page.imagePath && page.imageUrl.startsWith('data:'))
       const persisted = needsMigration ? await documentStorageService.persist(record) : record
-      if (needsMigration) await transaction('readwrite', store => store.put(documentStorageService.forMetadata(persisted)))
+      if (needsMigration) await transaction('readwrite', (store) => store.put(documentStorageService.forMetadata(persisted)))
       documents.push(await documentStorageService.hydrate(persisted))
     }
-    return documents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    return documents.filter((document) => !document.deletedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  },
+  async listDeleted() {
+    const records = sqliteRepository.available() ? await sqliteRepository.list() : ((await transaction('readonly', (store) => store.getAll())) as VaultDocument[])
+    const expiredBefore = Date.now() - 30 * 24 * 60 * 60 * 1000
+    const deleted = records.filter((document) => document.deletedAt)
+    for (const document of deleted.filter((document) => new Date(document.deletedAt!).getTime() < expiredBefore)) await this.remove(document.id)
+    const retained = deleted.filter((document) => new Date(document.deletedAt!).getTime() >= expiredBefore)
+    const hydrated: VaultDocument[] = []
+    for (const document of retained) hydrated.push(await documentStorageService.hydrate(document))
+    return hydrated.sort((a, b) => b.deletedAt!.localeCompare(a.deletedAt!))
   },
   async get(id) {
     if (sqliteRepository.available()) {
@@ -71,11 +83,11 @@ export const documentsRepository: DocumentRepository = {
       const record = raw ? await ensurePrivateStorage(raw) : undefined
       return record ? documentStorageService.hydrate(record) : undefined
     }
-    const record = await transaction('readonly', s => s.get(id)) as VaultDocument | undefined
+    const record = (await transaction('readonly', (s) => s.get(id))) as VaultDocument | undefined
     if (!record) return undefined
-    const needsMigration = documentStorageService.usesNativeFiles() && record.pages.some(page => !page.imagePath && page.imageUrl.startsWith('data:'))
+    const needsMigration = documentStorageService.usesNativeFiles() && record.pages.some((page) => !page.imagePath && page.imageUrl.startsWith('data:'))
     const persisted = needsMigration ? await documentStorageService.persist(record) : record
-    if (needsMigration) await transaction('readwrite', store => store.put(documentStorageService.forMetadata(persisted)))
+    if (needsMigration) await transaction('readwrite', (store) => store.put(documentStorageService.forMetadata(persisted)))
     return documentStorageService.hydrate(persisted)
   },
   async reveal(id) {
@@ -90,28 +102,37 @@ export const documentsRepository: DocumentRepository = {
   async save(document) {
     const persisted = await documentStorageService.persist(document)
     Object.assign(document, persisted)
-    if (sqliteRepository.available()) { await ensureNativeMigration(); await sqliteRepository.save(documentStorageService.forMetadata(persisted)); return }
-    await transaction('readwrite', store => store.put(documentStorageService.forMetadata(persisted)))
+    if (sqliteRepository.available()) {
+      await ensureNativeMigration()
+      await sqliteRepository.save(documentStorageService.forMetadata(persisted))
+      return
+    }
+    await transaction('readwrite', (store) => store.put(documentStorageService.forMetadata(persisted)))
   },
   async remove(id) {
     await documentStorageService.remove(id)
-    if (sqliteRepository.available()) { await ensureNativeMigration(); await sqliteRepository.remove(id); return }
-    await transaction('readwrite', s => s.delete(id))
+    if (sqliteRepository.available()) {
+      await ensureNativeMigration()
+      await sqliteRepository.remove(id)
+      return
+    }
+    await transaction('readwrite', (s) => s.delete(id))
   },
   async search(query) {
     if (sqliteRepository.available()) {
       await ensureNativeMigration()
-      const records = await sqliteRepository.search(query), documents: VaultDocument[] = []
+      const records = await sqliteRepository.search(query),
+        documents: VaultDocument[] = []
       for (const record of records) documents.push(await documentStorageService.hydrate(await ensurePrivateStorage(record)))
-      return documents
+      return documents.filter((document) => !document.deletedAt)
     }
     const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean)
     const documents = await this.list()
     if (!terms.length) return documents
-    return documents.filter(doc => {
+    return documents.filter((doc) => {
       const smart = doc.smartMetadata
-      const haystack = [doc.title, doc.folder, ...doc.tags, smart?.documentType?.replaceAll('_', ' '), smart?.organization, smart?.dateLabel, smart?.amount?.display, smart?.identifier?.value, ...doc.pages.flatMap(page => [page.ocrText, ...(page.barcodes ?? []).flatMap(code => [code.rawValue, code.displayValue])])].filter(Boolean).join(' ').toLocaleLowerCase()
-      return terms.every(term => haystack.includes(term))
+      const haystack = [doc.title, doc.folder, ...doc.tags, smart?.documentType?.replaceAll('_', ' '), smart?.organization, smart?.dateLabel, smart?.amount?.display, smart?.identifier?.value, ...doc.pages.flatMap((page) => [page.ocrText, ...(page.barcodes ?? []).flatMap((code) => [code.rawValue, code.displayValue])])].filter(Boolean).join(' ').toLocaleLowerCase()
+      return terms.every((term) => haystack.includes(term))
     })
-  },
+  }
 }

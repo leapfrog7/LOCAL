@@ -133,13 +133,20 @@ public class PdfDownloadPlugin extends Plugin {
 
     @PluginMethod
     public void openPdf(PluginCall call) {
-        if (lastSavedPdf == null) {
-            call.reject("Download the PDF before opening it.");
-            return;
-        }
+        String sourcePath = call.getString("sourcePath");
         try {
+            Uri openUri = lastSavedPdf;
+            if (sourcePath != null) {
+                File filesDirectory = getContext().getFilesDir().getCanonicalFile();
+                File cacheDirectory = getContext().getCacheDir().getCanonicalFile();
+                File source = new File(filesDirectory, sourcePath).getCanonicalFile();
+                boolean allowed = source.getPath().startsWith(filesDirectory.getPath() + File.separator) || source.getPath().startsWith(cacheDirectory.getPath() + File.separator);
+                if (!allowed || !source.isFile()) { call.reject("The prepared PDF could not be found."); return; }
+                openUri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", source);
+            }
+            if (openUri == null) { call.reject("Prepare the PDF before opening it."); return; }
             Intent view = new Intent(Intent.ACTION_VIEW);
-            view.setDataAndType(lastSavedPdf, "application/pdf");
+            view.setDataAndType(openUri, "application/pdf");
             view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             Intent chooser = Intent.createChooser(view, "Open PDF with");
             Log.i(TAG, "Opening PDF chooser inside LOCAL task.");
