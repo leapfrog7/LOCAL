@@ -2,7 +2,9 @@ import { useRef, useState } from 'react'
 import { Maximize2, Minus, Plus } from 'lucide-react'
 import type { OCRBoundingBox } from '../../../domain/types'
 
-const clamp = (value: number) => Math.min(4, Math.max(1, value))
+const MIN_SCALE = .25
+const MAX_SCALE = 4
+const clamp = (value: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, value))
 
 export function ZoomablePage({ src, alt, rotation, highlights = [] }: { src: string; alt: string; rotation: number; highlights?: OCRBoundingBox[] }) {
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
@@ -11,7 +13,7 @@ export function ZoomablePage({ src, alt, rotation, highlights = [] }: { src: str
   const reset = () => setView({ scale: 1, x: 0, y: 0 })
   const zoom = (delta: number) => setView(current => {
     const scale = clamp(current.scale + delta)
-    return scale === 1 ? { scale, x: 0, y: 0 } : { ...current, scale }
+    return scale <= 1 ? { scale, x: 0, y: 0 } : { ...current, scale }
   })
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -38,9 +40,9 @@ export function ZoomablePage({ src, alt, rotation, highlights = [] }: { src: str
   return <div className="zoom-page" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onDoubleClick={() => view.scale === 1 ? zoom(1) : reset()}>
     <div className="zoom-page-content" style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale}) rotate(${rotation}deg)` }}><img src={src} alt={alt} draggable={false} />{highlights.map((box, index) => <mark key={`${box.x}-${box.y}-${index}`} className="ocr-highlight" style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.width * 100}%`, height: `${box.height * 100}%` }} aria-hidden="true" />)}</div>
     <div className="zoom-controls" aria-label="Page zoom controls">
-      <button onClick={() => zoom(-.5)} disabled={view.scale === 1} aria-label="Zoom out"><Minus /></button>
+      <button onClick={() => zoom(view.scale <= 1 ? -.25 : -.5)} disabled={view.scale <= MIN_SCALE} aria-label="Zoom out"><Minus /></button>
       <button onClick={reset} aria-label="Reset zoom"><Maximize2 /><span>{Math.round(view.scale * 100)}%</span></button>
-      <button onClick={() => zoom(.5)} disabled={view.scale === 4} aria-label="Zoom in"><Plus /></button>
+      <button onClick={() => zoom(view.scale < 1 ? .25 : .5)} disabled={view.scale >= MAX_SCALE} aria-label="Zoom in"><Plus /></button>
     </div>
   </div>
 }

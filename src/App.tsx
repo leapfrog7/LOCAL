@@ -3,7 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerE
 import {
   Archive, ArrowLeft, Camera, Check, ChevronRight, CircleHelp, Clock3, Copy, Crop, Download, ExternalLink, FileText, FileUp, Files, Folder, FolderOpen,
   GripVertical, Home, ImagePlus, LockKeyhole, MoreHorizontal, RotateCw, ScanLine, Search, Settings, ShieldCheck, ChevronDown, ChevronUp,
-  Share2, Tag, Trash2, Upload, X, PauseCircle, RefreshCw, Pencil, Lock, Minimize2, Unlock,
+  Share2, Tag, Trash2, Upload, X, PauseCircle, RefreshCw, Pencil, Lock, Unlock,
 } from 'lucide-react'
 import type { DocumentPage, Screen, VaultDocument } from './domain/types'
 import { documentsRepository } from './services/documentRepository'
@@ -29,7 +29,6 @@ import { pdfImportService } from './services/pdfImportService'
 import { analyseDocumentPages, combineDocuments, extractPages, insertDocumentPages, removeDocumentPages, reorderDocumentPages } from './services/documentOperationsService'
 import { exportOcrText } from './services/textExportService'
 import { PageExtractSheet } from './features/viewer/components/PageExtractSheet'
-import { CompressionSheet } from './features/viewer/components/CompressionSheet'
 import { TagEditorSheet } from './features/viewer/components/TagEditorSheet'
 import { BulkActionBar, BulkOrganizeSheet, type BulkEditMode } from './features/library/components/BulkDocumentTools'
 import { StorageSecurityPanel } from './features/settings/components/StorageSecurityPanel'
@@ -484,14 +483,14 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
   const [shareState, setShareState] = useState<'idle' | 'working' | 'error'>('idle')
   const [jobAction, setJobAction] = useState<'idle' | 'working'>('idle')
   const [actionsOpen, setActionsOpen] = useState(false)
-  const [actionView, setActionView] = useState<'main' | 'folder' | 'password' | 'private' | 'extract' | 'compress' | 'tags'>('main')
+  const [actionView, setActionView] = useState<'main' | 'folder' | 'password' | 'private' | 'extract' | 'tags'>('main')
   const [customFolder, setCustomFolder] = useState('')
+  const [folderOptions, setFolderOptions] = useState<string[]>(['Unfiled'])
+  const [foldersLoading, setFoldersLoading] = useState(false)
   const [pdfPassword, setPdfPassword] = useState('')
   const [pdfPasswordConfirm, setPdfPasswordConfirm] = useState('')
   const [actionBusy, setActionBusy] = useState(false)
   const [actionError, setActionError] = useState('')
-  const [compressionLevel, setCompressionLevel] = useState<PdfCompressionLevel>('balanced')
-  const [compressionMessage, setCompressionMessage] = useState('')
   const current = document.pages[page]
   const detectedCodes = useMemo(() => document.pages.flatMap(item => item.barcodes ?? []), [document.pages])
   const matches = useMemo(() => pageMatches(document, withinQuery), [document, withinQuery])
@@ -518,7 +517,15 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
     setActiveMatchIndex(next); setPage(matches[next].pageIndex)
   }
   const saveTitle = () => { const trimmed = title.trim(); if (trimmed) onChange({ ...document, title: trimmed, titleSource: 'manual', updatedAt: new Date().toISOString() }); setEditing(false) }
-  const closeActions = () => { setActionsOpen(false); setActionView('main'); setCustomFolder(''); setPdfPassword(''); setPdfPasswordConfirm(''); setActionError(''); setCompressionMessage('') }
+  const closeActions = () => { setActionsOpen(false); setActionView('main'); setCustomFolder(''); setPdfPassword(''); setPdfPasswordConfirm(''); setActionError('') }
+  const openFolderPicker = async () => {
+    setActionView('folder'); setFoldersLoading(true); setActionError('')
+    try {
+      const latestDocuments = await documentsRepository.list()
+      setFolderOptions(await folderService.list(latestDocuments))
+    } catch { setActionError('Could not refresh folders. Please try again.') }
+    finally { setFoldersLoading(false) }
+  }
   const updateMetadata = async (changes: Partial<Pick<VaultDocument, 'folder' | 'isPrivate'>>) => {
     setActionBusy(true); setActionError('')
     try { await onChange({ ...document, ...changes, updatedAt: new Date().toISOString() }); closeActions() }
@@ -554,12 +561,16 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
     try { await onCreate(await extractPages(document, indexes)) }
     catch (error) { setActionError(error instanceof Error ? error.message : 'Could not extract these pages.'); setActionBusy(false) }
   }
-  const compressPdf = async () => {
-    setActionBusy(true); setActionError(''); setCompressionMessage('')
+  const moveToNewFolder = async () => {
+    const name = customFolder.trim()
+    if (!name) return
+    setActionBusy(true); setActionError('')
     try {
-      const result = await downloadCompressedPdf(document, compressionLevel)
-      setCompressionMessage(`Saved ${Math.max(.1, result.bytes / 1024 / 1024).toFixed(1)} MB copy to Downloads · LOCAL`)
-    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not compress this PDF.') }
+      const latestDocuments = await documentsRepository.list()
+      const folder = await folderService.create(name, latestDocuments)
+      await onChange({ ...document, folder, updatedAt: new Date().toISOString() })
+      closeActions()
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not create this folder.') }
     finally { setActionBusy(false) }
   }
   const saveTags = async (tags: string[]) => {
@@ -623,7 +634,7 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
     <section className="document-canvas">{current && <ZoomablePage key={current.id} src={current.imageUrl} alt={`Page ${page + 1}`} rotation={current.rotation} highlights={highlights} />}{activeMatch?.pageIndex === page && <div className="viewer-match"><b>Page {page + 1}</b><span><HighlightedText text={activeMatch.snippet} query={withinQuery} /></span></div>}</section>
     <section className="thumbnail-strip" aria-label="Pages">{document.pages.map((item, index) => <button key={item.id} className={index === page ? 'active' : ''} onClick={() => setPage(index)}><img src={item.imageUrl} alt={`Page ${index + 1}`} /><span>{index + 1}</span></button>)}</section>
     <footer className="viewer-actions">
-      <div className="primary-document-actions"><button className="export-action" onClick={() => void (exportState === 'success' ? openPdf() : downloadPdf())} disabled={exportState === 'working' || exportState === 'opening'}>{exportState === 'working' || exportState === 'opening' ? <span className="button-spinner" /> : exportState === 'success' ? <ExternalLink /> : <Download />}<span>{exportState === 'working' ? 'Saving PDF…' : exportState === 'opening' ? 'Opening PDF…' : exportState === 'success' ? 'Open PDF' : 'Download PDF'}</span></button><button className="share-action" onClick={() => void sharePdf()} disabled={shareState === 'working'} aria-label="Share PDF">{shareState === 'working' ? <span className="button-spinner" /> : <Share2 />}</button></div>
+      <div className="primary-document-actions"><button className="export-action" onClick={() => void (exportState === 'success' ? openPdf() : downloadPdf())} disabled={exportState === 'working' || exportState === 'opening'}>{exportState === 'working' || exportState === 'opening' ? <span className="button-spinner" /> : exportState === 'success' ? <ExternalLink /> : <Download />}<span>{exportState === 'working' ? 'Saving copy…' : exportState === 'opening' ? 'Opening copy…' : exportState === 'success' ? 'Open saved copy' : 'Save a copy'}</span></button><button className="share-action" onClick={() => void sharePdf()} disabled={shareState === 'working'} aria-label="Share PDF">{shareState === 'working' ? <span className="button-spinner" /> : <Share2 />}</button></div>
       {exportState === 'success' && <p className="export-success"><Check /> Saved to Downloads · LOCAL</p>}
       {exportError && <p className="export-error">{exportError}</p>}
       {shareState === 'error' && <p className="export-error">Could not open sharing for this PDF. Please try again.</p>}
@@ -636,21 +647,19 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
           <div className="sheet-actions">
             <button onClick={() => { closeActions(); setEditingPage(true) }}><Crop /><span><strong>Crop this page</strong><small>Adjust the borders of page {page + 1}</small></span><ChevronRight /></button>
             <button onClick={() => { closeActions(); setEditing(true) }}><Pencil /><span><strong>Rename</strong><small>Change the document name</small></span><ChevronRight /></button>
-            <button onClick={() => setActionView('folder')}><FolderOpen /><span><strong>Move to folder</strong><small>Currently in {document.folder}</small></span><ChevronRight /></button>
+            <button onClick={() => void openFolderPicker()}><FolderOpen /><span><strong>Move to folder</strong><small>Currently in {document.folder}</small></span><ChevronRight /></button>
             <button onClick={() => setActionView('tags')}><Tag /><span><strong>Manage tags</strong><small>{document.tags.length ? document.tags.join(', ') : 'Add searchable labels'}</small></span><ChevronRight /></button>
             {document.pages.length > 1 && <button onClick={() => setActionView('extract')}><Copy /><span><strong>Extract pages</strong><small>Create a separate document from selected pages</small></span><ChevronRight /></button>}
-            <button onClick={() => setActionView('compress')}><Minimize2 /><span><strong>Compress PDF</strong><small>Download a smaller sharing copy</small></span><ChevronRight /></button>
             <button disabled={actionBusy} onClick={() => void togglePrivacy()}>{document.isPrivate ? <Unlock /> : <Lock />}<span><strong>{document.isPrivate ? 'Remove private lock' : 'Make private'}</strong><small>{document.isPrivate ? 'Stop requiring document-level authentication' : 'Lock access inside LOCAL and hide previews'}</small></span><ChevronRight /></button>
             <button onClick={() => setActionView('password')}><ShieldCheck /><span><strong>{document.pdfPasswordProtected ? 'Change PDF password' : 'Add PDF password'}</strong><small>{document.pdfPasswordProtected ? 'AES-256 protection is enabled' : 'Protect Downloads and shared copies'}</small></span><ChevronRight /></button>
             <button className="danger" onClick={() => { closeActions(); if (confirm('Delete this document from this device?')) onDelete() }}><Trash2 /><span><strong>Delete document</strong><small>Remove it permanently from this device</small></span><ChevronRight /></button>
           </div>
         </> : actionView === 'folder' ? <>
           <header><button onClick={() => setActionView('main')} aria-label="Back"><ArrowLeft /></button><div><strong>Move to folder</strong><span>Choose where this document belongs</span></div><button onClick={closeActions} aria-label="Close"><X /></button></header>
-          <div className="folder-options">{['Unfiled', 'Office', 'Personal', 'Receipts', 'Legal'].map(folder => <button key={folder} className={document.folder === folder ? 'selected' : ''} disabled={actionBusy} onClick={() => void updateMetadata({ folder })}><Folder /> <span>{folder}</span>{document.folder === folder && <Check />}</button>)}</div>
-          <form className="custom-folder" onSubmit={event => { event.preventDefault(); const folder = customFolder.trim(); if (folder) void updateMetadata({ folder }) }}><label htmlFor="custom-folder-name">New folder</label><div><input id="custom-folder-name" value={customFolder} onChange={event => setCustomFolder(event.target.value)} placeholder="Enter folder name" maxLength={48} /><button disabled={actionBusy || !customFolder.trim()}><Check /> Move</button></div></form>
+          <div className="folder-options">{foldersLoading ? <span className="button-spinner" role="status" aria-label="Refreshing folders" /> : folderOptions.map(folder => <button key={folder} className={document.folder === folder ? 'selected' : ''} disabled={actionBusy} onClick={() => void updateMetadata({ folder })}><Folder /> <span>{folder}</span>{document.folder === folder && <Check />}</button>)}</div>
+          <form className="custom-folder" onSubmit={event => { event.preventDefault(); void moveToNewFolder() }}><label htmlFor="custom-folder-name">New folder</label><div><input id="custom-folder-name" value={customFolder} onChange={event => setCustomFolder(event.target.value)} placeholder="Enter folder name" maxLength={48} /><button disabled={actionBusy || !customFolder.trim()}><Check /> Create & move</button></div></form>
         </> : actionView === 'tags' ? <TagEditorSheet initialTags={document.tags} busy={actionBusy} error={actionError} onClose={closeActions} onSave={tags => void saveTags(tags)} />
         : actionView === 'extract' ? <PageExtractSheet document={document} initialPage={page} busy={actionBusy} error={actionError} onClose={closeActions} onExtract={indexes => void extractSelectedPages(indexes)} />
-        : actionView === 'compress' ? <CompressionSheet selected={compressionLevel} busy={actionBusy} message={compressionMessage} error={actionError} onSelect={setCompressionLevel} onClose={closeActions} onCompress={() => void compressPdf()} />
         : actionView === 'private' ? <>
           <header><div><strong>Private lock enabled</strong><span>This document now requires device authentication in LOCAL</span></div><button onClick={closeActions} aria-label="Close"><X /></button></header>
           <div className="privacy-level-card"><Lock /><strong>Protected inside LOCAL</strong><p>The title and preview are hidden. Add a PDF password as well if downloaded and shared copies must remain protected.</p><button onClick={() => setActionView('password')}><ShieldCheck /> Add PDF password</button><button className="quiet" onClick={closeActions}>Done</button></div>
