@@ -1,6 +1,7 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { Share } from '@capacitor/share'
 import type { DocumentPage, VaultDocument } from '../domain/types'
+import { drawAnnotations } from './annotationRendering'
 import type { PdfRenderOptions, PdfService } from './contracts'
 import { documentStorageService } from './documentStorageService'
 
@@ -58,6 +59,8 @@ export const pdfService: PdfService = {
       context.translate(width / 2, height / 2)
       context.rotate(page.rotation * Math.PI / 180)
       context.drawImage(image, -image.width * scale / 2, -image.height * scale / 2, image.width * scale, image.height * scale)
+      context.translate(-image.width * scale / 2, -image.height * scale / 2)
+      drawAnnotations(context, page.annotations?.strokes ?? [], image.width * scale, image.height * scale)
       pdf.addImage(canvas.toDataURL('image/jpeg', options.jpegQuality ?? 0.88), 'JPEG', 0, 0, width, height, `page-${index}`, 'FAST')
       addOcrTextLayer(pdf, page, width, height)
     }

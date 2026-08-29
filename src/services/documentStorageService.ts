@@ -88,6 +88,13 @@ export const documentStorageService = {
     return path
   },
 
+  async persistVersionedPdf(documentId: string, blob: Blob) {
+    if (!Capacitor.isNativePlatform()) return undefined
+    const path = `${ROOT}/${documentId}/document-${crypto.randomUUID()}.pdf`
+    await Filesystem.writeFile({ path, data: await blobBase64(blob), directory: Directory.Data, recursive: true })
+    return path
+  },
+
   async persistTemporaryPdf(blob: Blob) {
     if (!Capacitor.isNativePlatform()) return undefined
     const path = `${ROOT}/exports/${crypto.randomUUID()}.pdf`

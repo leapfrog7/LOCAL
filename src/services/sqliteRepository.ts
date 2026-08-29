@@ -1,6 +1,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { CapacitorSQLite, SQLiteConnection, type SQLiteDBConnection } from '@capacitor-community/sqlite'
-import type { DetectedBarcode, DocumentPage, DocumentSmartMetadata, DocumentStatus, OCRWord, PageCorners, PageProcessingState, ProcessingAdjustments, RenderPreset, VaultDocument } from '../domain/types'
+import type { DetectedBarcode, DocumentPage, DocumentSmartMetadata, DocumentStatus, OCRWord, PageAnnotations, PageCorners, PageProcessingState, ProcessingAdjustments, RenderPreset, VaultDocument } from '../domain/types'
 import type { ProcessingJob, ProcessingJobStatus, ProcessingJobType } from '../domain/processing'
 
 const DB_NAME = 'local_vault'
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS pages (
   image_path TEXT, original_image_path TEXT, thumbnail_path TEXT, ocr_image_path TEXT,
   rotation INTEGER NOT NULL DEFAULT 0, ocr_text TEXT NOT NULL DEFAULT '', ocr_state TEXT NOT NULL,
   ocr_confidence REAL, ocr_languages TEXT, processing_state TEXT, render_preset TEXT,
-  corners_json TEXT, detection_confidence REAL, ocr_words_json TEXT NOT NULL DEFAULT '[]', adjustments_json TEXT, barcodes_json TEXT NOT NULL DEFAULT '[]',
+  corners_json TEXT, detection_confidence REAL, ocr_words_json TEXT NOT NULL DEFAULT '[]', adjustments_json TEXT, barcodes_json TEXT NOT NULL DEFAULT '[]', annotations_json TEXT,
   FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS pages_document_position ON pages(document_id, position);
@@ -106,7 +106,8 @@ async function getConnection() {
       if (!pageColumns.has('ocr_words_json')) await db.execute("ALTER TABLE pages ADD COLUMN ocr_words_json TEXT NOT NULL DEFAULT '[]';")
       if (!pageColumns.has('adjustments_json')) await db.execute('ALTER TABLE pages ADD COLUMN adjustments_json TEXT;')
       if (!pageColumns.has('barcodes_json')) await db.execute("ALTER TABLE pages ADD COLUMN barcodes_json TEXT NOT NULL DEFAULT '[]';")
-    await db.execute('PRAGMA user_version = 9;')
+      if (!pageColumns.has('annotations_json')) await db.execute('ALTER TABLE pages ADD COLUMN annotations_json TEXT;')
+    await db.execute('PRAGMA user_version = 10;')
       try {
         await db.execute('CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(document_id UNINDEXED, title, folder, ocr_text);')
       } catch {
@@ -148,7 +149,8 @@ function pageFromRow(row: Row): DocumentPage {
     detectionConfidence: row.detection_confidence == null ? undefined : number(row.detection_confidence),
     ocrWords: parseJson<OCRWord[]>(row.ocr_words_json, []),
     adjustments: parseJson<ProcessingAdjustments | undefined>(row.adjustments_json, undefined),
-    barcodes: parseJson<DetectedBarcode[]>(row.barcodes_json, [])
+    barcodes: parseJson<DetectedBarcode[]>(row.barcodes_json, []),
+    annotations: parseJson<PageAnnotations | undefined>(row.annotations_json, undefined)
   }
 }
 
@@ -224,9 +226,9 @@ export const sqliteRepository = {
         await db.run('INSERT OR IGNORE INTO folders(name, created_at) VALUES(?, ?)', [document.folder, document.createdAt], false)
         for (const [position, page] of document.pages.entries())
           await db.run(
-            `INSERT INTO pages(id,document_id,position,image_path,original_image_path,thumbnail_path,ocr_image_path,rotation,ocr_text,ocr_state,ocr_confidence,ocr_languages,processing_state,render_preset,corners_json,detection_confidence,ocr_words_json,adjustments_json,barcodes_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(id) DO UPDATE SET position=excluded.position,image_path=excluded.image_path,original_image_path=excluded.original_image_path,thumbnail_path=excluded.thumbnail_path,ocr_image_path=excluded.ocr_image_path,rotation=excluded.rotation,ocr_text=excluded.ocr_text,ocr_state=excluded.ocr_state,ocr_confidence=excluded.ocr_confidence,ocr_languages=excluded.ocr_languages,processing_state=excluded.processing_state,render_preset=excluded.render_preset,corners_json=excluded.corners_json,detection_confidence=excluded.detection_confidence,ocr_words_json=excluded.ocr_words_json,adjustments_json=excluded.adjustments_json,barcodes_json=excluded.barcodes_json`,
-            [page.id, document.id, position, page.imagePath ?? null, page.originalImagePath ?? null, page.thumbnailPath ?? null, page.ocrImagePath ?? null, page.rotation, page.ocrText, page.ocrState, page.ocrConfidence ?? null, JSON.stringify(page.ocrLanguages ?? []), page.processingState ?? null, page.renderPreset ?? null, page.corners ? JSON.stringify(page.corners) : null, page.detectionConfidence ?? null, JSON.stringify(page.ocrWords ?? []), page.adjustments ? JSON.stringify(page.adjustments) : null, JSON.stringify(page.barcodes ?? [])],
+            `INSERT INTO pages(id,document_id,position,image_path,original_image_path,thumbnail_path,ocr_image_path,rotation,ocr_text,ocr_state,ocr_confidence,ocr_languages,processing_state,render_preset,corners_json,detection_confidence,ocr_words_json,adjustments_json,barcodes_json,annotations_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET position=excluded.position,image_path=excluded.image_path,original_image_path=excluded.original_image_path,thumbnail_path=excluded.thumbnail_path,ocr_image_path=excluded.ocr_image_path,rotation=excluded.rotation,ocr_text=excluded.ocr_text,ocr_state=excluded.ocr_state,ocr_confidence=excluded.ocr_confidence,ocr_languages=excluded.ocr_languages,processing_state=excluded.processing_state,render_preset=excluded.render_preset,corners_json=excluded.corners_json,detection_confidence=excluded.detection_confidence,ocr_words_json=excluded.ocr_words_json,adjustments_json=excluded.adjustments_json,barcodes_json=excluded.barcodes_json,annotations_json=excluded.annotations_json`,
+            [page.id, document.id, position, page.imagePath ?? null, page.originalImagePath ?? null, page.thumbnailPath ?? null, page.ocrImagePath ?? null, page.rotation, page.ocrText, page.ocrState, page.ocrConfidence ?? null, JSON.stringify(page.ocrLanguages ?? []), page.processingState ?? null, page.renderPreset ?? null, page.corners ? JSON.stringify(page.corners) : null, page.detectionConfidence ?? null, JSON.stringify(page.ocrWords ?? []), page.adjustments ? JSON.stringify(page.adjustments) : null, JSON.stringify(page.barcodes ?? []), page.annotations ? JSON.stringify(page.annotations) : null],
             false
           )
         if (document.pages.length) {

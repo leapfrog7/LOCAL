@@ -51,7 +51,7 @@ const ACTIONS: { id: ActionMode; icon: React.ReactNode; title: string; descripti
   { id: 'insert', icon: <FilePlus2 />, title: 'Insert pages', description: 'Copy pages from one PDF into another' },
   { id: 'clean', icon: <Eraser />, title: 'Clean pages', description: 'Review blank and duplicate page suggestions' },
   { id: 'rename', icon: <PencilLine />, title: 'Batch rename', description: 'Rename several documents from a template' },
-  { id: 'export', icon: <Download />, title: 'Export OCR text', description: 'Share recognised text as TXT or Markdown' },
+  { id: 'export', icon: <Download />, title: 'Export text', description: 'Share detected text as TXT or Markdown' },
 ]
 
 export function ActionsScreen(props: ActionsScreenProps) {

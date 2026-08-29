@@ -20,4 +20,12 @@ describe('encrypted LOCAL backups', () => {
     const encrypted = await encryptBackupPayload(current, 'correct horse battery staple')
     await expect(decryptBackupPayload(encrypted, 'correct horse battery staple')).resolves.toEqual(current)
   })
+
+  it('preserves durable page annotations in the encrypted payload', async () => {
+    const annotated = { format: 'local-backup-v2' as const, createdAt: '2026-08-28T00:00:00.000Z', folders: ['Unfiled'], documents: [{ id: 'doc', title: 'Marked', folder: 'Unfiled', createdAt: '2026-08-28T00:00:00.000Z', updatedAt: '2026-08-28T00:00:00.000Z', status: 'indexed' as const, tags: [], pages: [{ id: 'page', imageUrl: 'data:image/jpeg;base64,AA==', rotation: 0, ocrText: 'kept', ocrState: 'complete' as const, annotations: { version: 1 as const, strokes: [{ id: 'stroke', tool: 'highlighter' as const, color: '#ffee00', width: .02, points: [{ x: .1, y: .2 }, { x: .8, y: .2 }] }] } }] }] }
+    const encrypted = await encryptBackupPayload(annotated, 'correct horse battery staple')
+    const restored = await decryptBackupPayload(encrypted, 'correct horse battery staple')
+    expect(restored.documents[0].pages[0].annotations?.strokes[0]).toMatchObject({ tool: 'highlighter', color: '#ffee00' })
+    expect(restored.documents[0].pages[0].ocrText).toBe('kept')
+  })
 })

@@ -22,6 +22,21 @@ export interface DocumentPage {
   ocrLanguages?: string[]
   ocrWords?: OCRWord[]
   barcodes?: DetectedBarcode[]
+  annotations?: PageAnnotations
+}
+
+export type AnnotationTool = 'pen' | 'highlighter'
+export interface AnnotationPoint { x: number; y: number }
+export interface AnnotationStroke {
+  id: string
+  tool: AnnotationTool
+  color: string
+  width: number
+  points: AnnotationPoint[]
+}
+export interface PageAnnotations {
+  version: 1
+  strokes: AnnotationStroke[]
 }
 
 export interface OCRBoundingBox {

@@ -44,6 +44,7 @@ Android Studio and an Android SDK are required to build the APK.
 - Background OCR that survives activity recreation, with immediate PDF access and bounded retries
 - Smart on-device titles and metadata extraction for common receipts, bills, letters, and office documents
 - Document viewer, folder browser, rename, deletion, post-save crop correction, and one-tap PDF export
+- Durable pen and highlighter annotations with normalized page coordinates, stroke erasing, undo/redo, visibility controls, annotated thumbnails, and searchable-PDF export
 - Native import of existing PDFs into the same local OCR and search pipeline
 - Ordered document combining, selected-page extraction, and three-level PDF compression
 - Multi-select move, tag, privacy, and delete actions
@@ -63,5 +64,7 @@ Google ML Kit Document Scanner owns Android capture, edge detection, cropping, a
 ## Architecture
 
 Domain types live in `src/domain`. UI code depends on contracts in `src/services/contracts.ts`, not OCR engines, SQLite, or native APIs directly. This keeps browser and native implementations replaceable without changing document-management screens.
+
+For a guided tour of the repository, runtime flows, native bridge, persistence model, and feature-to-file index, see [`docs/mental_map.md`](docs/mental_map.md).
 
 No analytics, telemetry, authentication, cloud database, remote OCR, or remote storage is included.

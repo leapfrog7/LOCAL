@@ -1,22 +1,30 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Maximize2, Minus, Plus } from 'lucide-react'
-import type { OCRBoundingBox } from '../../../domain/types'
+import type { DocumentPage, OCRBoundingBox } from '../../../domain/types'
+import type { AnnotationStroke } from '../../../domain/types'
+import { AnnotationLayer, type AnnotationMode } from './AnnotationLayer'
 
 const MIN_SCALE = .25
 const MAX_SCALE = 4
 const clamp = (value: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, value))
 
-export function ZoomablePage({ src, alt, rotation, highlights = [], onNavigate }: { src: string; alt: string; rotation: number; highlights?: OCRBoundingBox[]; onNavigate?: (direction: -1 | 1) => void }) {
-  const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
+export interface PageViewState { scale: number; x: number; y: number }
+export interface ContinuousViewState { scale: number; scrollTop: number; scrollLeft: number }
+
+export function ZoomablePage({ src, alt, rotation, highlights = [], annotations = [], annotationsVisible = true, annotationMode = 'pan', annotationColor = '#d32f2f', annotationWidth = .006, initialView, trimMargins = false, onAnnotationsChange, onViewChange, onNavigate }: { src: string; alt: string; rotation: number; highlights?: OCRBoundingBox[]; annotations?: AnnotationStroke[]; annotationsVisible?: boolean; annotationMode?: AnnotationMode; annotationColor?: string; annotationWidth?: number; initialView?: PageViewState; trimMargins?: boolean; onAnnotationsChange?: (strokes: AnnotationStroke[]) => void; onViewChange?: (view: PageViewState) => void; onNavigate?: (direction: -1 | 1) => void }) {
+  const [view, setView] = useState<PageViewState>(() => initialView ?? { scale: 1, x: 0, y: 0 })
   const pointers = useRef(new Map<number, { x: number; y: number }>())
   const gesture = useRef({ distance: 0, scale: 1 })
   const swipe = useRef<{ id: number; x: number; y: number } | null>(null)
+  const lastTap = useRef<{ time: number; x: number; y: number } | null>(null)
+  useEffect(() => { onViewChange?.(view) }, [view, onViewChange])
   const reset = () => setView({ scale: 1, x: 0, y: 0 })
   const zoom = (delta: number) => setView(current => {
     const scale = clamp(current.scale + delta)
     return scale <= 1 ? { scale, x: 0, y: 0 } : { ...current, scale }
   })
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (annotationMode !== 'pan') return
     event.currentTarget.setPointerCapture(event.pointerId)
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
     if (view.scale <= 1 && !(event.target as HTMLElement).closest('button')) swipe.current = { id: event.pointerId, x: event.clientX, y: event.clientY }
@@ -26,6 +34,7 @@ export function ZoomablePage({ src, alt, rotation, highlights = [], onNavigate }
     }
   }
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (annotationMode !== 'pan') return
     const previous = pointers.current.get(event.pointerId)
     if (!previous) return
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
@@ -43,17 +52,189 @@ export function ZoomablePage({ src, alt, rotation, highlights = [], onNavigate }
       const dx = event.clientX - start.x
       const dy = event.clientY - start.y
       if (Math.abs(dx) >= 52 && Math.abs(dx) > Math.abs(dy) * 1.25) onNavigate?.(dx < 0 ? 1 : -1)
+      else if (Math.hypot(dx, dy) < 12) {
+        const previous = lastTap.current
+        const now = Date.now()
+        if (previous && now - previous.time < 330 && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) < 42) {
+          smartZoom(event.clientX, event.clientY, event.currentTarget)
+          lastTap.current = null
+        } else lastTap.current = { time: now, x: event.clientX, y: event.clientY }
+      }
     }
     if (start?.id === event.pointerId) swipe.current = null
     pointers.current.delete(event.pointerId)
   }
+  const smartZoom = (clientX: number, clientY: number, target: HTMLDivElement) => {
+    const bounds = target.getBoundingClientRect()
+    const focalX = clientX - bounds.left - bounds.width / 2
+    const focalY = clientY - bounds.top - bounds.height / 2
+    setView(current => {
+      if (current.scale > 1.05) return { scale: 1, x: 0, y: 0 }
+      const scale = 2
+      return { scale, x: focalX - (scale / current.scale) * (focalX - current.x), y: focalY - (scale / current.scale) * (focalY - current.y) }
+    })
+  }
 
-  return <div className="zoom-page" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onDoubleClick={() => view.scale === 1 ? zoom(1) : reset()}>
-    <div className="zoom-page-content" style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale}) rotate(${rotation}deg)` }}><img src={src} alt={alt} draggable={false} />{highlights.map((box, index) => <mark key={`${box.x}-${box.y}-${index}`} className="ocr-highlight" style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.width * 100}%`, height: `${box.height * 100}%` }} aria-hidden="true" />)}</div>
+  return <div className="zoom-page" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+    <div className="zoom-page-content" style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})` }}><div className="zoom-page-document" style={{ transform: `rotate(${rotation}deg) scale(${trimMargins ? 1.08 : 1})` }}><img src={src} alt={alt} draggable={false} /><AnnotationLayer strokes={annotations} visible={annotationsVisible} mode={annotationMode} color={annotationColor} width={annotationWidth} onChange={strokes => onAnnotationsChange?.(strokes)} />{highlights.map((box, index) => <mark key={`${box.x}-${box.y}-${index}`} className="ocr-highlight" style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.width * 100}%`, height: `${box.height * 100}%` }} aria-hidden="true" />)}</div></div>
     <div className="zoom-controls" aria-label="Page zoom controls">
       <button onClick={() => zoom(view.scale <= 1 ? -.25 : -.5)} disabled={view.scale <= MIN_SCALE} aria-label="Zoom out"><Minus /></button>
       <button onClick={reset} aria-label="Reset zoom"><Maximize2 /><span>{Math.round(view.scale * 100)}%</span></button>
       <button onClick={() => zoom(view.scale < 1 ? .25 : .5)} disabled={view.scale >= MAX_SCALE} aria-label="Zoom in"><Plus /></button>
+    </div>
+  </div>
+}
+
+const CONTINUOUS_MIN_SCALE = .5
+const CONTINUOUS_MAX_SCALE = 3
+const continuousClamp = (value: number) => Math.min(CONTINUOUS_MAX_SCALE, Math.max(CONTINUOUS_MIN_SCALE, value))
+
+export function ContinuousPages({ pages, currentPage, initialView, trimMargins = false, facing = false, annotationsVisible = true, onViewChange, onPage }: { pages: DocumentPage[]; currentPage: number; initialView?: ContinuousViewState; trimMargins?: boolean; facing?: boolean; annotationsVisible?: boolean; onViewChange?: (view: ContinuousViewState) => void; onPage: (page: number) => void }) {
+  const [scale, setScale] = useState(() => continuousClamp(initialView?.scale ?? 1))
+  const scaleRef = useRef(scale)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const pointers = useRef(new Map<number, { x: number; y: number }>())
+  const pinch = useRef<{ distance: number; scale: number } | null>(null)
+  const tap = useRef<{ id: number; x: number; y: number; moved: boolean } | null>(null)
+  const lastTap = useRef<{ time: number; x: number; y: number } | null>(null)
+  const pageRefs = useRef(new Map<number, HTMLButtonElement>())
+  const frame = useRef(0)
+  const restored = useRef(false)
+  const reportedPage = useRef(currentPage)
+  const [rendered, setRendered] = useState(() => ({ start: Math.max(0, currentPage - 2), end: Math.min(pages.length - 1, currentPage + 2) }))
+  const [ratios, setRatios] = useState<Record<string, number>>({})
+  const reportPosition = () => {
+    const scroller = scrollRef.current
+    if (!scroller) return
+    onViewChange?.({
+      scale: scaleRef.current,
+      scrollTop: scroller.scrollTop / Math.max(1, scroller.scrollHeight - scroller.clientHeight),
+      scrollLeft: scroller.scrollLeft / Math.max(1, scroller.scrollWidth - scroller.clientWidth)
+    })
+  }
+  const updateViewport = () => {
+    const scroller = scrollRef.current
+    if (!scroller) return
+    const bounds = scroller.getBoundingClientRect()
+    const buffer = bounds.height * 2
+    let first = pages.length - 1
+    let last = 0
+    let closest = currentPage
+    let closestDistance = Number.POSITIVE_INFINITY
+    pageRefs.current.forEach((element, index) => {
+      const rect = element.getBoundingClientRect()
+      if (rect.bottom >= bounds.top - buffer && rect.top <= bounds.bottom + buffer) {
+        first = Math.min(first, index)
+        last = Math.max(last, index)
+      }
+      const distance = Math.abs((rect.top + rect.bottom) / 2 - (bounds.top + bounds.bottom) / 2)
+      if (rect.bottom >= bounds.top && rect.top <= bounds.bottom && distance < closestDistance) { closest = index; closestDistance = distance }
+    })
+    if (first <= last) setRendered(current => current.start === first && current.end === last ? current : { start: first, end: last })
+    if (closest !== currentPage) { reportedPage.current = closest; onPage(closest) }
+    reportPosition()
+  }
+  const scheduleViewportUpdate = () => {
+    cancelAnimationFrame(frame.current)
+    frame.current = requestAnimationFrame(updateViewport)
+  }
+  useEffect(() => {
+    const scroller = scrollRef.current
+    if (!scroller || restored.current) return
+    restored.current = true
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      scroller.scrollTop = (initialView?.scrollTop ?? 0) * Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+      scroller.scrollLeft = (initialView?.scrollLeft ?? 0) * Math.max(0, scroller.scrollWidth - scroller.clientWidth)
+      updateViewport()
+    }))
+    return () => cancelAnimationFrame(frame.current)
+  }, [])
+  useEffect(() => {
+    if (!restored.current || currentPage === reportedPage.current) return
+    reportedPage.current = currentPage
+    pageRefs.current.get(currentPage)?.scrollIntoView({ block: 'center', inline: 'center' })
+    setRendered({ start: Math.max(0, currentPage - 2), end: Math.min(pages.length - 1, currentPage + 2) })
+  }, [currentPage, pages.length])
+  const applyScale = (requested: number, focalX?: number, focalY?: number) => {
+    const next = continuousClamp(requested)
+    const previous = scaleRef.current
+    if (next === previous) return
+    const scroller = scrollRef.current
+    const x = focalX ?? (scroller?.clientWidth ?? 0) / 2
+    const y = focalY ?? (scroller?.clientHeight ?? 0) / 2
+    const contentX = (scroller?.scrollLeft ?? 0) + x
+    const contentY = (scroller?.scrollTop ?? 0) + y
+    const ratio = next / previous
+    scaleRef.current = next
+    setScale(next)
+    if (scroller) requestAnimationFrame(() => {
+      scroller.scrollLeft = Math.max(0, contentX * ratio - x)
+      scroller.scrollTop = Math.max(0, contentY * ratio - y)
+      updateViewport()
+    })
+  }
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId)
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+    if (pointers.current.size === 1 && !(event.target as HTMLElement).closest('.zoom-controls')) tap.current = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false }
+    else tap.current = null
+    if (pointers.current.size === 2) {
+      const [a, b] = [...pointers.current.values()]
+      pinch.current = { distance: Math.hypot(a.x - b.x, a.y - b.y), scale: scaleRef.current }
+    }
+  }
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const previous = pointers.current.get(event.pointerId)
+    const scroller = scrollRef.current
+    if (!previous || !scroller) return
+    event.preventDefault()
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+    if (tap.current?.id === event.pointerId && Math.hypot(event.clientX - tap.current.x, event.clientY - tap.current.y) > 10) tap.current.moved = true
+    if (pointers.current.size >= 2) {
+      const [a, b] = [...pointers.current.values()]
+      const distance = Math.hypot(a.x - b.x, a.y - b.y)
+      if (!pinch.current) pinch.current = { distance, scale: scaleRef.current }
+      const bounds = scroller.getBoundingClientRect()
+      applyScale(pinch.current.scale * distance / Math.max(1, pinch.current.distance), (a.x + b.x) / 2 - bounds.left, (a.y + b.y) / 2 - bounds.top)
+      return
+    }
+    scroller.scrollLeft -= event.clientX - previous.x
+    scroller.scrollTop -= event.clientY - previous.y
+  }
+  const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const candidate = tap.current
+    if (candidate?.id === event.pointerId && !candidate.moved && pointers.current.size === 1) {
+      const previous = lastTap.current
+      const now = Date.now()
+      if (previous && now - previous.time < 330 && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) < 42) {
+        smartZoom(event.clientX, event.clientY, event.currentTarget)
+        lastTap.current = null
+      } else lastTap.current = { time: now, x: event.clientX, y: event.clientY }
+    }
+    if (candidate?.id === event.pointerId) tap.current = null
+    pointers.current.delete(event.pointerId)
+    if (pointers.current.size < 2) pinch.current = null
+  }
+  const smartZoom = (clientX: number, clientY: number, target: HTMLDivElement) => {
+    const bounds = target.getBoundingClientRect()
+    applyScale(scaleRef.current > 1.05 ? 1 : 2, clientX - bounds.left, clientY - bounds.top)
+  }
+
+  return <div className="continuous-viewer">
+    <div ref={scrollRef} className="continuous-scroll" onScroll={scheduleViewportUpdate} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+      <div className={`continuous-pages${facing ? ' facing-pages' : ''}`} style={{ width: `${scale * 100}%` }}>
+        {pages.map((page, index) => {
+          const sourceRatio = ratios[page.id] ?? .707
+          const ratio = page.rotation % 180 === 0 ? sourceRatio : 1 / sourceRatio
+          const shouldRender = index >= rendered.start && index <= rendered.end
+          return <button ref={(element) => { if (element) pageRefs.current.set(index, element); else pageRefs.current.delete(index) }} key={page.id} className={shouldRender ? '' : 'page-placeholder'} style={{ aspectRatio: ratio }} onClick={() => onPage(index)} aria-label={`Page ${index + 1}`} aria-current={index === currentPage ? 'page' : undefined}><span>Page {index + 1}</span>{shouldRender ? <div className="continuous-page-document" style={{ transform: `rotate(${page.rotation}deg) scale(${trimMargins ? 1.06 : 1})` }}><img src={page.imageUrl} alt={`Page ${index + 1}`} draggable={false} onLoad={(event) => { const image = event.currentTarget; const next = image.naturalWidth / Math.max(1, image.naturalHeight); setRatios(current => current[page.id] === next ? current : { ...current, [page.id]: next }) }} /><AnnotationLayer strokes={page.annotations?.strokes ?? []} visible={annotationsVisible} mode="pan" color="#000000" width={.006} onChange={() => undefined} /></div> : <i aria-hidden="true" />}</button>
+        })}
+      </div>
+    </div>
+    <div className="zoom-controls continuous-zoom-controls" aria-label="Continuous view zoom controls">
+      <button onClick={() => applyScale(scale <= 1 ? scale - .25 : scale - .5)} disabled={scale <= CONTINUOUS_MIN_SCALE} aria-label="Zoom out"><Minus /></button>
+      <button onClick={() => applyScale(1)} aria-label="Reset zoom"><Maximize2 /><span>{Math.round(scale * 100)}%</span></button>
+      <button onClick={() => applyScale(scale < 1 ? scale + .25 : scale + .5)} disabled={scale >= CONTINUOUS_MAX_SCALE} aria-label="Zoom in"><Plus /></button>
     </div>
   </div>
 }
