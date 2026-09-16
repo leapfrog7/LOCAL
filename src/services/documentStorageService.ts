@@ -22,10 +22,17 @@ async function writeImage(documentId: string, pageId: string, suffix: string, va
   return path
 }
 
+let dataDirectoryUri: Promise<string> | undefined
 async function displayUrl(path?: string) {
   if (!path) return ''
-  const result = await Filesystem.getUri({ path, directory: Directory.Data })
-  return Capacitor.convertFileSrc(result.uri)
+  // Private sessions and imported absolute URIs keep their original resolution path.
+  if (path.startsWith('/') || path.includes(':') || path.split('/').includes('..')) {
+    return Capacitor.convertFileSrc((await Filesystem.getUri({ path, directory: Directory.Data })).uri)
+  }
+  dataDirectoryUri ??= Filesystem.getUri({ path: '', directory: Directory.Data })
+    .then(result => result.uri.replace(/\/$/, ''))
+    .catch(error => { dataDirectoryUri = undefined; throw error })
+  return Capacitor.convertFileSrc(`${await dataDirectoryUri}/${path.split('/').map(encodeURIComponent).join('/')}`)
 }
 
 async function persistPage(documentId: string, page: DocumentPage): Promise<DocumentPage> {

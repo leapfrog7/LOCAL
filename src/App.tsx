@@ -1,5 +1,6 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { App as CapacitorApp } from '@capacitor/app'
+import { Capacitor } from '@capacitor/core'
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { Archive, ArrowLeft, Bookmark, Camera, Check, ChevronRight, CircleHelp, Clock3, Copy, Crop, Download, Eraser, Eye, EyeOff, ExternalLink, FileText, FileUp, Files, Folder, FolderOpen, GripVertical, Highlighter, Home, ImagePlus, LockKeyhole, Moon, MoreHorizontal, MousePointer2, Redo2, RotateCw, Save, ScanLine, Search, Settings, ShieldCheck, ChevronDown, ChevronUp, Share2, Sun, Tag, Trash2, Undo2, Upload, Volume2, VolumeX, X, PauseCircle, RefreshCw, Pencil, Lock, Unlock, RotateCcw, AlertTriangle, Grid2X2, List, SlidersHorizontal, BookOpen, Rows3, AppWindow, Hash } from 'lucide-react'
 import type { AnnotationStroke, DocumentPage, Screen, VaultDocument } from './domain/types'
@@ -35,6 +36,7 @@ import { viewerStateService, type ViewerReadingState } from './services/viewerSt
 import { annotationCopy, finalizeAnnotations } from './services/annotationService'
 import { ActionsScreen } from './features/actions/ActionsScreen'
 import type { ActionSaveMode } from './features/actions/ActionsScreen'
+import { LatestRequest } from './services/latestRequest'
 import packageMetadata from '../package.json'
 
 const formatDate = (value: string) =>
@@ -56,18 +58,35 @@ const statusLabel = (doc: VaultDocument) => {
   return done ? `Reading text · ${done} of ${doc.pages.length} pages` : `Preparing text · 0 of ${doc.pages.length} pages`
 }
 
+type TextSizePreference = 'small' | 'default' | 'large'
+const TEXT_SIZE_KEY = 'local.appearance.text-size'
+const applyTextSize = (value: TextSizePreference) => {
+  document.documentElement.dataset.textSize = value
+  localStorage.setItem(TEXT_SIZE_KEY, value)
+}
+
 function App() {
+  const nativePlatform = Capacitor.isNativePlatform()
   const [screen, setScreen] = useState<Screen>(() => (import.meta.env.DEV && new URLSearchParams(window.location.search).has('scanner-lab') ? { name: 'scanner-lab' } : { name: 'home' }))
   const [documents, setDocuments] = useState<VaultDocument[]>([])
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [searchResults, setSearchResults] = useState<DocumentSearchResult[]>([])
   const [searchFilter, setSearchFilter] = useState<SmartSearchFilter>('all')
-  const deferredQuery = useDeferredValue(query)
+  const [searchError, setSearchError] = useState('')
+  const [completedSearch, setCompletedSearch] = useState('')
+  const searchRequest = useRef(new LatestRequest())
+  const searchCriteria = useRef({ query, searchFilter })
+  searchCriteria.current = { query, searchFilter }
+  const searchKey = JSON.stringify([query, searchFilter])
   const [lockState, setLockState] = useState<'checking' | 'locked' | 'unlocked'>('checking')
   const [backHint, setBackHint] = useState(false)
   const lastBackAt = useRef(0)
   const hiddenAt = useRef(0)
+  useEffect(() => {
+    const saved = localStorage.getItem(TEXT_SIZE_KEY)
+    applyTextSize(saved === 'small' || saved === 'large' ? saved : 'default')
+  }, [])
   const unlocking = useRef(false)
   const privateViewerId = useRef<string | undefined>(undefined)
   const sessionCleanup = useRef<Promise<void>>(Promise.resolve())
@@ -119,16 +138,33 @@ function App() {
   }, [])
 
   const refresh = async () => {
-    const results = await searchService.search(deferredQuery, searchFilter)
-    const allDocuments = deferredQuery || searchFilter !== 'all' ? await documentsRepository.list() : results.map((result) => result.document)
-    setSearchResults(results)
-    setDocuments(allDocuments)
-    setLoading(false)
+    const requestIsCurrent = searchRequest.current.begin()
+    const criteria = searchCriteria.current
+    const isCurrent = () => requestIsCurrent() && criteria.query === searchCriteria.current.query && criteria.searchFilter === searchCriteria.current.searchFilter
+    setLoading(true)
+    setSearchError('')
+    try {
+      const results = await searchService.search(criteria.query, criteria.searchFilter)
+      if (!isCurrent()) return
+      const allDocuments = criteria.query || criteria.searchFilter !== 'all' ? await documentsRepository.list() : results.map(result => result.document)
+      if (!isCurrent()) return
+      setSearchResults(results)
+      setDocuments(allDocuments)
+    } catch (error) {
+      if (!isCurrent()) return
+      setSearchResults([])
+      setSearchError(error instanceof Error ? error.message : 'Search could not complete. Please try again.')
+    } finally {
+      if (isCurrent()) {
+        setCompletedSearch(JSON.stringify([criteria.query, criteria.searchFilter]))
+        setLoading(false)
+      }
+    }
   }
   useEffect(() => {
-    setLoading(true)
-    void refresh()
-  }, [deferredQuery, searchFilter])
+    const timer = window.setTimeout(() => void refresh(), query.trim() ? 180 : 0)
+    return () => { window.clearTimeout(timer); searchRequest.current.invalidate() }
+  }, [query, searchFilter])
 
   useEffect(() => {
     void resumePendingProcessing(updateDocument)
@@ -348,6 +384,7 @@ function App() {
     return document ? (
       <Viewer
         document={document}
+        browserMode={!nativePlatform}
         initialPage={screen.page}
         initialQuery={screen.query}
         onBack={() => open({ name: 'home' })}
@@ -390,16 +427,18 @@ function App() {
   privateViewerId.current = undefined
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${nativePlatform ? '' : ' web-platform'}`}>
+      {!nativePlatform ? <DesktopSidebar active={screen.name} documentCount={documents.length} onOpen={name => open({ name })} /> : null}
       <main className="content">
-        {screen.name === 'home' && <Library documents={searchResults.map((result) => result.document)} allDocuments={documents} searchResults={searchResults} query={query} setQuery={setQuery} searchFilter={searchFilter} setSearchFilter={setSearchFilter} loading={loading} onScan={() => open({ name: 'capture' })} onPrepareImport={preparePdfImport} onCommitImport={saveNewDocument} onBulkUpdate={bulkUpdateDocuments} onBulkDelete={bulkDeleteDocuments} onOpen={(id, page) => void openDocument(id, page, parseAdvancedQuery(query).text)} />}
+        {screen.name === 'home' && searchError ? <p className="sheet-error" role="alert">{searchError} <button onClick={() => void refresh()}>Retry search</button></p> : null}
+        {screen.name === 'home' && <Library documents={searchResults.map((result) => result.document)} allDocuments={documents} searchResults={searchResults} query={query} setQuery={setQuery} searchFilter={searchFilter} setSearchFilter={setSearchFilter} loading={loading || completedSearch !== searchKey} browserMode={!nativePlatform} onScan={() => open({ name: 'capture' })} onTools={() => open({ name: 'actions' })} onPrepareImport={preparePdfImport} onCommitImport={saveNewDocument} onBulkUpdate={bulkUpdateDocuments} onBulkDelete={bulkDeleteDocuments} onOpen={(id, page) => void openDocument(id, page, parseAdvancedQuery(query).text)} />}
         {screen.name === 'folders' && <Folders documents={documents} onOpen={(id) => void openDocument(id)} onChange={refresh} />}
         {screen.name === 'actions' && <ActionsScreen documents={documents} onCombine={combineSelectedDocuments} onExtract={extractFromActions} onReorder={reorderFromActions} onCompress={compressFromActions} onInsert={insertFromActions} onClean={cleanFromActions} onAnalyse={analyseFromActions} onRename={renameFromActions} onExportText={exportTextFromActions} />}
         {screen.name === 'settings' && <SettingsScreen documents={documents} onChanged={refresh} onOpenTrash={() => open({ name: 'trash' })} />}
         {screen.name === 'trash' && <TrashScreen onBack={() => open({ name: 'settings' })} onChanged={refresh} />}
       </main>
     <nav className="bottom-nav" aria-label="Main navigation">
-        <NavButton active={screen.name === 'home'} icon={<Home />} label="Library" onClick={() => open({ name: 'home' })} />
+        <NavButton active={screen.name === 'home'} icon={<Home />} label="Home" onClick={() => open({ name: 'home' })} />
         <NavButton active={screen.name === 'folders'} icon={<Folder />} label="Folders" onClick={() => open({ name: 'folders' })} />
         <button className="nav-tab scan-tab" onClick={() => open({ name: 'capture' })} aria-label="Scan document">
           <span className="nav-icon">
@@ -407,7 +446,6 @@ function App() {
           </span>
           <span className="nav-label">Scan</span>
         </button>
-        <NavButton active={screen.name === 'actions'} icon={<Files />} label="Actions" onClick={() => open({ name: 'actions' })} />
         <NavButton active={screen.name === 'settings'} icon={<Settings />} label="Settings" onClick={() => open({ name: 'settings' })} />
     </nav>
     {backHint ? <div className="back-hint" role="status">Press Back again to minimize LOCAL</div> : null}
@@ -425,7 +463,8 @@ const SEARCH_FILTERS: { id: SmartSearchFilter; label: string }[] = [
   { id: 'statements', label: 'Statements' },
   { id: 'needs_attention', label: 'Needs attention' }
 ]
-function Library({ documents, allDocuments, searchResults, query, setQuery, searchFilter, setSearchFilter, loading, onScan, onPrepareImport, onCommitImport, onBulkUpdate, onBulkDelete, onOpen }: { documents: VaultDocument[]; allDocuments: VaultDocument[]; searchResults: DocumentSearchResult[]; query: string; setQuery: (value: string) => void; searchFilter: SmartSearchFilter; setSearchFilter: (value: SmartSearchFilter) => void; loading: boolean; onScan: () => void; onPrepareImport: (onStage: (stage: string) => void) => Promise<VaultDocument | null>; onCommitImport: (document: VaultDocument) => Promise<void>; onBulkUpdate: (ids: string[], action: { type: 'move' | 'tag' | 'privacy'; value: string | boolean }) => Promise<void>; onBulkDelete: (ids: string[]) => Promise<void>; onOpen: (id: string, page?: number) => void }) {
+const QUICK_SEARCH_FILTER_IDS = new Set<SmartSearchFilter>(['all', 'receipts', 'needs_attention'])
+function Library({ documents, allDocuments, searchResults, query, setQuery, searchFilter, setSearchFilter, loading, browserMode, onScan, onTools, onPrepareImport, onCommitImport, onBulkUpdate, onBulkDelete, onOpen }: { documents: VaultDocument[]; allDocuments: VaultDocument[]; searchResults: DocumentSearchResult[]; query: string; setQuery: (value: string) => void; searchFilter: SmartSearchFilter; setSearchFilter: (value: SmartSearchFilter) => void; loading: boolean; browserMode: boolean; onScan: () => void; onTools: () => void; onPrepareImport: (onStage: (stage: string) => void) => Promise<VaultDocument | null>; onCommitImport: (document: VaultDocument) => Promise<void>; onBulkUpdate: (ids: string[], action: { type: 'move' | 'tag' | 'privacy'; value: string | boolean }) => Promise<void>; onBulkDelete: (ids: string[]) => Promise<void>; onOpen: (id: string, page?: number) => void }) {
   const resultsById = useMemo(() => new Map(searchResults.map((result) => [result.document.id, result])), [searchResults])
   const highlightQuery = useMemo(() => parseAdvancedQuery(query).text, [query])
   const [importing, setImporting] = useState(false),
@@ -442,6 +481,7 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
   const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => localStorage.getItem('local.library.view') === 'grid' ? 'grid' : 'list')
   const [sortOrder, setSortOrder] = useState<'recent' | 'oldest' | 'title' | 'pages'>('recent')
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [recentOnly, setRecentOnly] = useState(!browserMode)
   const [folderFilter, setFolderFilter] = useState('All folders'), [tagFilter, setTagFilter] = useState('All tags'), [privacyFilter, setPrivacyFilter] = useState<'all' | 'public' | 'private'>('all')
   const [recentSearches, setRecentSearches] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('local.library.recent-searches') ?? '[]') as string[] } catch { return [] } })
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds])
@@ -449,8 +489,8 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
   const processingDocuments = useMemo(() => allDocuments.filter((document) => document.status !== 'indexed').slice(0, 4), [allDocuments])
   const folders = useMemo(() => ['All folders', ...new Set(allDocuments.map(document => document.folder))], [allDocuments])
   const tags = useMemo(() => ['All tags', ...new Set(allDocuments.flatMap(document => document.tags))], [allDocuments])
-  const displayDocuments = useMemo(() => documents.filter(document => (folderFilter === 'All folders' || document.folder === folderFilter) && (tagFilter === 'All tags' || document.tags.includes(tagFilter)) && (privacyFilter === 'all' || Boolean(document.isPrivate) === (privacyFilter === 'private'))).sort((a, b) => sortOrder === 'title' ? a.title.localeCompare(b.title) : sortOrder === 'pages' ? b.pages.length - a.pages.length : sortOrder === 'oldest' ? a.createdAt.localeCompare(b.createdAt) : b.createdAt.localeCompare(a.createdAt)), [documents, folderFilter, tagFilter, privacyFilter, sortOrder])
-  const activeVisualFilters = [folderFilter !== 'All folders', tagFilter !== 'All tags', privacyFilter !== 'all'].filter(Boolean).length
+  const displayDocuments = useMemo(() => documents.filter(document => (!recentOnly || Boolean(query.trim()) || searchFilter !== 'all' || Date.parse(document.createdAt) >= Date.now() - 21 * 86400000) && (folderFilter === 'All folders' || document.folder === folderFilter) && (tagFilter === 'All tags' || document.tags.includes(tagFilter)) && (privacyFilter === 'all' || Boolean(document.isPrivate) === (privacyFilter === 'private'))).sort((a, b) => query.trim() ? (resultsById.get(b.id)?.score ?? 0) - (resultsById.get(a.id)?.score ?? 0) : sortOrder === 'title' ? a.title.localeCompare(b.title) : sortOrder === 'pages' ? b.pages.length - a.pages.length : sortOrder === 'oldest' ? a.createdAt.localeCompare(b.createdAt) : b.createdAt.localeCompare(a.createdAt)), [documents, folderFilter, tagFilter, privacyFilter, sortOrder, recentOnly, query, searchFilter, resultsById])
+  const activeVisualFilters = [searchFilter !== 'all', folderFilter !== 'All folders', tagFilter !== 'All tags', privacyFilter !== 'all'].filter(Boolean).length
   useEffect(() => { if (query.trim().length < 3) return; const timer = window.setTimeout(() => { setRecentSearches(current => { const next = [query.trim(), ...current.filter(value => value.toLocaleLowerCase() !== query.trim().toLocaleLowerCase())].slice(0, 5); localStorage.setItem('local.library.recent-searches', JSON.stringify(next)); return next }) }, 900); return () => window.clearTimeout(timer) }, [query])
   useEffect(() => {
     const back = (raw: Event) => {
@@ -539,7 +579,7 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
           <ShieldCheck size={15} /> On-device
         </div>
       </header>
-      <section className="hero">
+      {!allDocuments.length ? <section className="hero">
         <div className="eyebrow">Your private document cabinet</div>
         <h2>
           Find any paper,
@@ -550,24 +590,20 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
         <div className="hero-actions">
           <button className="primary-button" onClick={onScan}>
             <Camera />
-            <span>Scan a document</span>
+            <span>{browserMode ? 'Add document images' : 'Scan a document'}</span>
           </button>
           <button className="import-pdf-button" disabled={importing} onClick={() => void importPdf()}>
             {importing ? <span className="button-spinner" /> : <FileUp />}
             <span>{importing ? 'Importing locally…' : 'Import PDF'}</span>
           </button>
         </div>
-        {importError && (
-          <p className="hero-error" role="alert">
-            {importError}
-          </p>
-        )}
-        {importStatus ? (
-          <p className="import-status" role="status">
-            <span className="button-spinner" /> {importStatus}
-          </p>
-        ) : null}
-      </section>
+      </section> : <section className="library-quick-actions" aria-label="Quick actions">
+        <button onClick={onScan}><Camera /><span><strong>{browserMode ? 'Add images' : 'Scan'}</strong><small>{browserMode ? 'Choose page photos' : 'Capture pages'}</small></span></button>
+        <button disabled={importing} onClick={() => void importPdf()}>{importing ? <span className="button-spinner" /> : <FileUp />}<span><strong>Import PDF</strong><small>Add from device</small></span></button>
+        <button onClick={onTools}><Files /><span><strong>Document tools</strong><small>Combine or edit</small></span></button>
+      </section>}
+      {importError ? <p className="hero-error library-import-message" role="alert">{importError}</p> : null}
+      {importStatus ? <p className="import-status library-import-message" role="status"><span className="button-spinner" /> {importStatus}</p> : null}
       {processingDocuments.length ? (
         <section className="processing-centre" aria-label="Document processing">
           <header>
@@ -597,17 +633,17 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
       ) : null}
       <div className="search-field">
         <Search size={20} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search text or use filters" aria-label="Search documents" />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search documents" aria-label="Search documents" />
         {query ? (
           <button onClick={() => setQuery('')} aria-label="Clear search">
             <X size={18} />
           </button>
         ) : null}
-        <button onClick={() => setSearchHelp((open) => !open)} aria-label="Advanced search help" aria-expanded={searchHelp}>
+        {browserMode ? <button onClick={() => setSearchHelp(open => !open)} aria-label="Advanced search help" aria-expanded={searchHelp}>
           <CircleHelp size={18} />
-        </button>
+        </button> : null}
       </div>
-      {!query && recentSearches.length ? <div className="recent-searches"><span>Recent</span>{recentSearches.map(value => <button key={value} onClick={() => setQuery(value)}><Clock3 /> {value}</button>)}<button className="clear" onClick={() => { setRecentSearches([]); localStorage.removeItem('local.library.recent-searches') }}>Clear</button></div> : null}
+      {browserMode && !query && recentSearches.length ? <div className="recent-searches"><span>Recent</span>{recentSearches.map(value => <button key={value} onClick={() => setQuery(value)}><Clock3 /> {value}</button>)}<button className="clear" onClick={() => { setRecentSearches([]); localStorage.removeItem('local.library.recent-searches') }}>Clear</button></div> : null}
       {searchHelp ? (
         <aside className="search-help">
           <strong>Advanced search</strong>
@@ -621,14 +657,15 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
           </div>
         </aside>
       ) : null}
-      <div className="smart-filter-strip" aria-label="Document filters">
-        {SEARCH_FILTERS.map((filter) => (
+      {browserMode ? <div className="smart-filter-strip" aria-label="Document filters">
+        {SEARCH_FILTERS.filter((filter) => QUICK_SEARCH_FILTER_IDS.has(filter.id)).map((filter) => (
           <button key={filter.id} className={searchFilter === filter.id ? 'active' : ''} aria-pressed={searchFilter === filter.id} onClick={() => setSearchFilter(filter.id)}>
             {filter.label}
           </button>
         ))}
-      </div>
-      <div className="library-view-tools"><button onClick={() => setFiltersOpen(true)}><SlidersHorizontal /> Filters{activeVisualFilters ? ` (${activeVisualFilters})` : ''}</button><label>Sort<select value={sortOrder} onChange={event => setSortOrder(event.target.value as typeof sortOrder)}><option value="recent">Newest</option><option value="oldest">Oldest</option><option value="title">Title</option><option value="pages">Most pages</option></select></label><div role="group" aria-label="Library view"><button className={viewMode === 'list' ? 'active' : ''} onClick={() => { setViewMode('list'); localStorage.setItem('local.library.view', 'list') }} aria-label="List view" aria-pressed={viewMode === 'list'}><List /></button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => { setViewMode('grid'); localStorage.setItem('local.library.view', 'grid') }} aria-label="Grid view" aria-pressed={viewMode === 'grid'}><Grid2X2 /></button></div></div>
+        <button className="more-filters" onClick={() => setFiltersOpen(true)}><SlidersHorizontal /> More</button>
+      </div> : null}
+      <div className="library-view-tools">{!browserMode && !query.trim() && searchFilter === 'all' ? <label>Added<select aria-label="Date added" value={recentOnly ? 'recent' : 'all'} onChange={event => setRecentOnly(event.target.value === 'recent')}><option value="recent">Last 3 weeks</option><option value="all">All time</option></select></label> : null}<button onClick={() => setFiltersOpen(true)}><SlidersHorizontal /> Filters{activeVisualFilters ? ` (${activeVisualFilters})` : ''}</button>{browserMode ? <><label>Sort<select disabled={Boolean(query.trim())} value={query.trim() ? 'relevance' : sortOrder} onChange={event => setSortOrder(event.target.value as typeof sortOrder)}>{query.trim() ? <option value="relevance">Relevance</option> : null}<option value="recent">Newest</option><option value="oldest">Oldest</option><option value="title">Title</option><option value="pages">Most pages</option></select></label><div role="group" aria-label="Home view"><button className={viewMode === 'list' ? 'active' : ''} onClick={() => { setViewMode('list'); localStorage.setItem('local.library.view', 'list') }} aria-label="List view" aria-pressed={viewMode === 'list'}><List /></button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => { setViewMode('grid'); localStorage.setItem('local.library.view', 'grid') }} aria-label="Grid view" aria-pressed={viewMode === 'grid'}><Grid2X2 /></button></div></> : null}</div>
       <section className="section-block">
         <div className="section-heading">
           <div>
@@ -643,36 +680,25 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
             ) : (
               <>
                 {searchFilter !== 'all' ? <button onClick={() => setSearchFilter('all')}>Clear filter</button> : null}
-                {displayDocuments.length ? (
-                  <button onClick={() => setSelecting(true)}>
-                    <Check /> Select
-                  </button>
-                ) : null}
+                {displayDocuments.length ? <small className="long-press-hint">Hold a document to select</small> : null}
               </>
             )}
           </div>
         </div>
         {loading ? (
-          <EmptyLoading />
+          <div role="status" aria-live="polite"><p className="search-progress"><span className="button-spinner" /> {query.trim() ? 'Searching documents…' : 'Loading documents…'}</p><EmptyLoading /></div>
         ) : displayDocuments.length ? (
           <div className={`document-list ${viewMode === 'grid' ? 'document-grid-view' : ''}${selecting ? ' selecting' : ''}`}>
             {displayDocuments.map((document) => {
               const match = resultsById.get(document.id)?.pageMatches[0]
-              return <DocumentRow key={document.id} document={document} match={match} query={highlightQuery} selecting={selecting} selected={selectedIdSet.has(document.id)} onClick={() => (selecting ? toggleSelected(document.id) : onOpen(document.id, match?.pageIndex))} />
+              return <DocumentRow key={document.id} document={document} match={match} query={highlightQuery} selecting={selecting} selected={selectedIdSet.has(document.id)} onLongPress={() => { if (!selecting) setSelecting(true); if (!selectedIdSet.has(document.id)) toggleSelected(document.id) }} onClick={() => (selecting ? toggleSelected(document.id) : onOpen(document.id, match?.pageIndex))} />
             })}
           </div>
         ) : (
-          <EmptyLibrary onScan={onScan} searching={Boolean(query || searchFilter !== 'all' || activeVisualFilters)} />
+          <EmptyLibrary onScan={onScan} searching={Boolean(query || searchFilter !== 'all' || activeVisualFilters || recentOnly)} />
         )}
       </section>
-      {filtersOpen ? <div className="tool-sheet-layer" role="presentation" onClick={() => setFiltersOpen(false)}><section className="tool-sheet library-filter-sheet" role="dialog" aria-modal="true" aria-label="Filter library" onClick={event => event.stopPropagation()}><header><div><SlidersHorizontal /><span><strong>Filter library</strong><small>Choose visible document properties</small></span></div><button onClick={() => setFiltersOpen(false)} aria-label="Close"><X /></button></header><label>Folder<select value={folderFilter} onChange={event => setFolderFilter(event.target.value)}>{folders.map(folder => <option key={folder}>{folder}</option>)}</select></label><label>Tag<select value={tagFilter} onChange={event => setTagFilter(event.target.value)}>{tags.map(tag => <option key={tag}>{tag}</option>)}</select></label><fieldset><legend>Privacy</legend>{(['all','public','private'] as const).map(value => <button key={value} className={privacyFilter === value ? 'selected' : ''} onClick={() => setPrivacyFilter(value)} aria-pressed={privacyFilter === value}>{value === 'all' ? 'All' : value === 'public' ? 'Standard' : 'Private'}</button>)}</fieldset><div className="filter-sheet-actions"><button onClick={() => { setFolderFilter('All folders'); setTagFilter('All tags'); setPrivacyFilter('all') }}>Clear all</button><button onClick={() => setFiltersOpen(false)}>Show {displayDocuments.length} documents</button></div></section></div> : null}
-      <div className="privacy-note">
-        <LockKeyhole size={18} />
-        <div>
-          <strong>Private by design</strong>
-          <span>Your files and searches stay entirely on this device.</span>
-        </div>
-      </div>
+      {filtersOpen ? <div className="tool-sheet-layer" role="presentation" onClick={() => setFiltersOpen(false)}><section className="tool-sheet library-filter-sheet" role="dialog" aria-modal="true" aria-label="Filter documents" onClick={event => event.stopPropagation()}><header><div><SlidersHorizontal /><span><strong>Filter documents</strong><small>Choose visible document properties</small></span></div><button onClick={() => setFiltersOpen(false)} aria-label="Close"><X /></button></header><label>Category<select value={searchFilter} onChange={event => setSearchFilter(event.target.value as SmartSearchFilter)}>{SEARCH_FILTERS.map(filter => <option key={filter.id} value={filter.id}>{filter.label}</option>)}</select></label><label>Folder<select value={folderFilter} onChange={event => setFolderFilter(event.target.value)}>{folders.map(folder => <option key={folder}>{folder}</option>)}</select></label><label>Tag<select value={tagFilter} onChange={event => setTagFilter(event.target.value)}>{tags.map(tag => <option key={tag}>{tag}</option>)}</select></label>{!browserMode ? <div className="library-view-tools"><label>Sort<select disabled={Boolean(query.trim())} value={query.trim() ? 'relevance' : sortOrder} onChange={event => setSortOrder(event.target.value as typeof sortOrder)}>{query.trim() ? <option value="relevance">Relevance</option> : null}<option value="recent">Newest</option><option value="oldest">Oldest</option><option value="title">Title</option><option value="pages">Most pages</option></select></label><div role="group" aria-label="Home view"><button className={viewMode === 'list' ? 'active' : ''} onClick={() => { setViewMode('list'); localStorage.setItem('local.library.view', 'list') }} aria-label="List view" aria-pressed={viewMode === 'list'}><List /></button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => { setViewMode('grid'); localStorage.setItem('local.library.view', 'grid') }} aria-label="Grid view" aria-pressed={viewMode === 'grid'}><Grid2X2 /></button></div></div> : null}<fieldset><legend>Privacy</legend>{(['all','public','private'] as const).map(value => <button key={value} className={privacyFilter === value ? 'selected' : ''} onClick={() => setPrivacyFilter(value)} aria-pressed={privacyFilter === value}>{value === 'all' ? 'All' : value === 'public' ? 'Standard' : 'Private'}</button>)}</fieldset><div className="filter-sheet-actions"><button onClick={() => { setSearchFilter('all'); setFolderFilter('All folders'); setTagFilter('All tags'); setPrivacyFilter('all') }}>Clear all</button><button onClick={() => setFiltersOpen(false)}>Show {displayDocuments.length} documents</button></div></section></div> : null}
       {selecting && selectedIds.length > 0 ? <BulkActionBar count={selectedIds.length} busy={bulkBusy} error={bulkError} allPrivate={selectedDocuments.every((document) => document.isPrivate)} onMove={() => setBulkMode('move')} onTag={() => setBulkMode('tag')} onPrivacy={() => void applyBulk('privacy', !selectedDocuments.every((document) => document.isPrivate))} onDelete={() => setDeleteConfirm(true)} onCancel={clearSelection} /> : null}
       {bulkMode ? <BulkOrganizeSheet mode={bulkMode} count={selectedIds.length} busy={bulkBusy} error={bulkError} onClose={() => setBulkMode(null)} onApply={(value) => void applyBulk(bulkMode, value)} /> : null}
       {deleteConfirm ? <ConfirmSheet title={`Move ${selectedIds.length} document${selectedIds.length === 1 ? '' : 's'} to Recently Deleted?`} message="You can restore them for 30 days before they are permanently removed." confirmLabel="Move to Recently Deleted" onConfirm={() => void deleteBulk()} onCancel={() => setDeleteConfirm(false)} /> : null}
@@ -688,9 +714,17 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
     lowerTerms = new Set(terms.map((term) => term.toLocaleLowerCase()))
   return <>{text.split(/(\s+)/).map((part, index) => (lowerTerms.has(part.replace(/[^\p{L}\p{N}]/gu, '').toLocaleLowerCase()) ? <mark key={index}>{part}</mark> : part))}</>
 }
-function DocumentRow({ document, match, query = '', selecting = false, selected = false, onClick }: { document: VaultDocument; match?: DocumentSearchResult['pageMatches'][number]; query?: string; selecting?: boolean; selected?: boolean; onClick: () => void }) {
+function DocumentRow({ document, match, query = '', selecting = false, selected = false, onClick, onLongPress }: { document: VaultDocument; match?: DocumentSearchResult['pageMatches'][number]; query?: string; selecting?: boolean; selected?: boolean; onClick: () => void; onLongPress?: () => void }) {
+  const holdTimer = useRef(0), holdStart = useRef<{ x: number; y: number } | null>(null), held = useRef(false)
+  const cancelHold = () => { window.clearTimeout(holdTimer.current); holdStart.current = null }
+  const pointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!onLongPress || selecting) return
+    held.current = false; holdStart.current = { x: event.clientX, y: event.clientY }
+    holdTimer.current = window.setTimeout(() => { held.current = true; onLongPress(); navigator.vibrate?.(18) }, 480)
+  }
+  const pointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => { const start = holdStart.current; if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) cancelHold() }
   return (
-    <button className={`document-row${selected ? ' selected' : ''}`} onClick={onClick} aria-pressed={selecting ? selected : undefined}>
+    <button className={`document-row${selected ? ' selected' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={cancelHold} onPointerCancel={cancelHold} onContextMenu={event => { if (onLongPress) event.preventDefault() }} onClick={event => { if (held.current) { event.preventDefault(); held.current = false; return } onClick() }} aria-pressed={selecting ? selected : undefined}>
       {match && !document.isPrivate && <span className="match-page-badge">Page {match.pageIndex + 1}</span>}
       {selecting ? <span className="row-selector">{selected ? <Check /> : null}</span> : null}
       <div className={`doc-thumb${document.isPrivate ? ' private' : ''}`}>{document.isPrivate ? <Lock /> : document.pages[0]?.thumbnailUrl || document.pages[0]?.imageUrl ? <img src={document.pages[0].thumbnailUrl || document.pages[0].imageUrl} alt="" /> : <FileText />}</div>
@@ -705,9 +739,9 @@ function DocumentRow({ document, match, query = '', selecting = false, selected 
             <HighlightedText text={match.snippet} query={query} />
           </span>
         ) : (
-          <small className={document.status === 'error' ? 'status error' : 'status'}>
+          <small className={`${document.status === 'error' ? 'status error' : 'status'}${document.status === 'indexed' && !document.isPrivate ? ' status-ready-dot' : ''}`} aria-label={document.status === 'indexed' && !document.isPrivate ? 'Searchable' : undefined}>
             <i />
-            {document.isPrivate ? 'Authenticate to open' : statusLabel(document)}
+            {document.isPrivate ? 'Authenticate to open' : document.status === 'indexed' ? null : statusLabel(document)}
           </small>
         )}
       </div>
@@ -1087,7 +1121,7 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
   )
 }
 
-function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange, onSaveCopy, onDelete }: { document: VaultDocument; initialPage?: number; initialQuery?: string; onBack: () => void; onChange: (doc: VaultDocument) => Promise<void>; onSaveCopy: (doc: VaultDocument) => Promise<void>; onDelete: () => void }) {
+function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onBack, onChange, onSaveCopy, onDelete }: { document: VaultDocument; browserMode: boolean; initialPage?: number; initialQuery?: string; onBack: () => void; onChange: (doc: VaultDocument) => Promise<void>; onSaveCopy: (doc: VaultDocument) => Promise<void>; onDelete: () => void }) {
   const savedReadingState = useMemo(() => viewerStateService.read(document.id), [document.id])
   const restoredPage = initialQuery || initialPage > 0 ? initialPage : savedReadingState.page
   const [page, setPage] = useState(Math.min(Math.max(restoredPage, 0), Math.max(0, document.pages.length - 1)))
@@ -1095,6 +1129,9 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
   const [searchOpen, setSearchOpen] = useState(Boolean(initialQuery))
   const [withinQuery, setWithinQuery] = useState(initialQuery)
   const [title, setTitle] = useState(document.title)
+  const [renameBusy, setRenameBusy] = useState(false)
+  const [renameError, setRenameError] = useState('')
+  const renamePending = useRef(false)
   const [editingPage, setEditingPage] = useState(false)
   const [exportState, setExportState] = useState<'idle' | 'working' | 'success' | 'opening' | 'error'>('idle')
   const [exportError, setExportError] = useState('')
@@ -1153,8 +1190,8 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
   const revealChrome = useCallback(() => {
     setChromeVisible(true)
     window.clearTimeout(chromeTimer.current)
-    chromeTimer.current = window.setTimeout(() => setChromeVisible(false), 3200)
-  }, [])
+    if (!browserMode && !editing) chromeTimer.current = window.setTimeout(() => setChromeVisible(false), 5200)
+  }, [browserMode, editing])
   useEffect(() => { revealChrome(); return () => window.clearTimeout(chromeTimer.current) }, [page, readingMode, revealChrome])
   useEffect(() => {
     if (!keepAwake) return
@@ -1249,11 +1286,11 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
   const [activeMatchIndex, setActiveMatchIndex] = useState(0)
   const activeMatch = matches[activeMatchIndex]
   useEffect(() => {
-    if (readingMode !== 'single') return
+    if (browserMode || readingMode !== 'single') return
     setThumbnailsVisible(true)
     const timer = window.setTimeout(() => setThumbnailsVisible(false), 2400)
     return () => window.clearTimeout(timer)
-  }, [page, readingMode])
+  }, [browserMode, page, readingMode])
   const navigatePage = (direction: -1 | 1) => setPage(currentPage => Math.max(0, Math.min(document.pages.length - 1, currentPage + direction)))
   useEffect(() => {
     void screenSecurityService.setEnabled(Boolean(document.isPrivate))
@@ -1293,16 +1330,23 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
     setActiveMatchIndex(next)
     setPage(matches[next].pageIndex)
   }
-  const saveTitle = () => {
+  const saveTitle = async () => {
+    if (renamePending.current) return
     const trimmed = title.trim()
-    if (trimmed)
-      onChange({
-        ...document,
-        title: trimmed,
-        titleSource: 'manual',
-        updatedAt: new Date().toISOString()
-      })
-    setEditing(false)
+    if (!trimmed) { setRenameError('Enter a document name.'); return }
+    if (trimmed === document.title) { setEditing(false); return }
+    renamePending.current = true
+    setRenameBusy(true)
+    setRenameError('')
+    try {
+      await onChange({ ...document, title: trimmed, titleSource: 'manual', updatedAt: new Date().toISOString() })
+      setEditing(false)
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : 'Could not rename the document. Please try again.')
+    } finally {
+      renamePending.current = false
+      setRenameBusy(false)
+    }
   }
   const closeActions = () => {
     setActionsOpen(false)
@@ -1321,7 +1365,7 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
       else if (annotationOpen) void saveAnnotations(false)
       else if (searchOpen) { setWithinQuery(''); setSearchOpen(false) }
       else if (editingPage) setEditingPage(false)
-      else if (editing) { setEditing(false); setTitle(document.title) }
+      else if (editing) { if (!renamePending.current) { setEditing(false); setTitle(document.title) } }
       else return
       raw.preventDefault()
     }
@@ -1533,24 +1577,14 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
       />
     )
   return (
-    <div className={`full-screen viewer-screen viewer-theme-${viewerTheme}${chromeVisible ? '' : ' chrome-hidden'}${trimMargins ? ' trim-margins' : ''}`}>
+    <div className={`full-screen viewer-screen viewer-theme-${viewerTheme}${browserMode ? ' desktop-viewer' : ''}${chromeVisible ? '' : ' chrome-hidden'}${trimMargins ? ' trim-margins' : ''}`}>
       <header className="top-bar">
         <button onClick={onBack} aria-label="Back">
           <ArrowLeft />
         </button>
         <div>
-          {editing ? (
-            <input className="title-edit" value={title} onChange={(event) => setTitle(event.target.value)} onBlur={saveTitle} onKeyDown={(event) => event.key === 'Enter' && saveTitle()} autoFocus />
-          ) : (
-            <>
-              <strong>
-                {document.isPrivate && <Lock size={13} />} {document.title}
-              </strong>
-              <span>
-                {document.folder} · {document.pages.length} pages
-              </span>
-            </>
-          )}
+          <strong>{document.isPrivate && <Lock size={13} />} {document.title}</strong>
+          <span>{document.folder} · {document.pages.length} pages</span>
         </div>
         <div className="viewer-header-actions">
           <button className={annotationOpen ? 'active annotation-active' : ''} onClick={() => { if (annotationOpen) void saveAnnotations(false); else { setReadingMode('single'); setAnnotationOpen(true); setAnnotationMode('pen'); setChromeVisible(true); setThumbnailsVisible(false); setAnnotationNotice('') } }} aria-label={annotationOpen ? 'Finish annotating' : 'Annotate document'}>{annotationOpen ? <Check /> : <Pencil />}</button>
@@ -1633,7 +1667,7 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
           <span>{detectedCodes[0].displayValue || detectedCodes[0].rawValue}</span>
         </div>
       )}
-      <section className={`document-canvas mode-${readingMode}`} onClick={(event) => { if (!(event.target as HTMLElement).closest('.zoom-controls,.show-pages-button,.viewer-scrubber')) { chromeVisible ? setChromeVisible(false) : revealChrome() } }}>
+      <section className={`document-canvas mode-${readingMode}`} onClick={(event) => { if (!(event.target as HTMLElement).closest('.zoom-controls,.show-pages-button,.viewer-scrubber')) { if (browserMode) revealChrome(); else chromeVisible ? setChromeVisible(false) : revealChrome() } }}>
         {readingMode === 'single' && current ? <ZoomablePage key={current.id} src={current.imageUrl} alt={`Page ${page + 1}`} rotation={current.rotation} highlights={highlights} annotations={annotationDraft[current.id] ?? []} annotationsVisible={annotationsVisible} annotationMode={annotationMode} annotationColor={annotationColor} annotationWidth={annotationWidth} initialView={readingState.current.single} trimMargins={trimMargins} onAnnotationsChange={strokes => changeAnnotations(current.id, strokes)} onViewChange={saveSingleView} onNavigate={navigatePage} /> : readingMode === 'continuous' || readingMode === 'facing' ? <ContinuousPages pages={document.pages.map(item => ({ ...item, annotations: { version: 1, strokes: annotationDraft[item.id] ?? [] } }))} currentPage={page} initialView={readingState.current.continuous} trimMargins={trimMargins} facing={readingMode === 'facing'} annotationsVisible={annotationsVisible} onViewChange={saveContinuousView} onPage={setPage} /> : <div className="ocr-reading-view"><header><div><strong>Text view</strong><span>Offline text recognition may contain errors</span></div><button onClick={toggleReadAloud}>{speaking ? <VolumeX /> : <Volume2 />} {speaking ? 'Stop' : 'Read from here'}</button></header>{document.pages.map((item, index) => <article key={item.id} className={index === page ? 'current' : ''} onClick={() => setPage(index)}><span>Page {index + 1}</span>{item.ocrText.trim() ? <p>{item.ocrText}</p> : <p className="empty">No text was detected on this page.</p>}</article>)}</div>}
         {readingMode === 'single' && !thumbnailsVisible && <button className="show-pages-button" onClick={() => setThumbnailsVisible(true)} aria-label="Show page thumbnails"><Grid2X2 /><span>{page + 1} / {document.pages.length}</span></button>}
         {activeMatch?.pageIndex === page && (
@@ -1691,6 +1725,15 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
         </div>
       )}
       {annotationSaveOpen && <div className="action-sheet-layer" role="presentation" onClick={() => !annotationBusy && setAnnotationSaveOpen(false)}><section className="annotation-save-sheet" role="dialog" aria-modal="true" aria-label="More annotation options" onClick={event => event.stopPropagation()}><header><div><strong>More options</strong><span>Your current document is saved automatically when you tap Done.</span></div><button disabled={annotationBusy} onClick={() => setAnnotationSaveOpen(false)} aria-label="Close"><X /></button></header>{annotationError && <p className="form-error">{annotationError}</p>}<button disabled={annotationBusy} onClick={() => void saveAnnotations(true)}><Copy /><span><strong>Save annotated copy</strong><small>Keep the original document unchanged</small></span></button>{annotationBusy && <p><span className="button-spinner" /> Preparing copy…</p>}</section></div>}
+      {editing ? <div className="tool-sheet-layer"><section className="tool-sheet rename-sheet" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+        <form onSubmit={event => { event.preventDefault(); void saveTitle() }}>
+          <h2 id="rename-title">Rename document</h2>
+          <label htmlFor="document-name">Document name</label>
+          <input id="document-name" value={title} maxLength={200} disabled={renameBusy} onChange={event => { setTitle(event.target.value); setRenameError('') }} onFocus={event => event.target.select()} onKeyDown={event => { if (event.key === 'Escape' && !renameBusy) { setEditing(false); setTitle(document.title) } }} autoFocus aria-invalid={Boolean(renameError)} aria-describedby={renameError ? 'rename-error' : undefined} />
+          {renameError ? <p id="rename-error" className="sheet-error" role="alert">{renameError}</p> : null}
+          <div className="filter-sheet-actions"><button type="button" disabled={renameBusy} onClick={() => { setEditing(false); setTitle(document.title) }}>Cancel</button><button type="submit" disabled={renameBusy || !title.trim()}>{renameBusy ? 'Saving…' : 'Save name'}</button></div>
+        </form>
+      </section></div> : null}
       {deleteConfirm ? <ConfirmSheet title={`Move “${document.title}” to Recently Deleted?`} message="The document can be restored for 30 days before it is permanently removed." confirmLabel="Move to Recently Deleted" onConfirm={() => void onDelete()} onCancel={() => setDeleteConfirm(false)} /> : null}
       {actionsOpen && (
         <div className="action-sheet-layer" role="presentation" onClick={closeActions}>
@@ -1746,6 +1789,8 @@ function Viewer({ document, initialPage = 0, initialQuery = '', onBack, onChange
                   <button
                     onClick={() => {
                       closeActions()
+                      setTitle(document.title)
+                      setRenameError('')
                       setEditing(true)
                     }}
                   >
@@ -2051,9 +2096,6 @@ function Folders({ documents, onOpen, onChange }: { documents: VaultDocument[]; 
         </section>
       ) : (
         <>
-          <button className="create-folder-button" onClick={() => setCreating(true)}>
-            <FolderOpen /> Create folder
-          </button>
           {creating && (
             <form
               className="folder-create-form"
@@ -2083,19 +2125,17 @@ function Folders({ documents, onOpen, onChange }: { documents: VaultDocument[]; 
           )}
           <div className="folder-grid">
             {folders.map((folder) => {
-              const count = documents.filter((document) => document.folder === folder).length
+              const folderDocuments = documents.filter((document) => document.folder === folder), count = folderDocuments.length
               return (
                 <button key={folder} onClick={() => setSelected(folder)}>
-                  <Folder />
-                  <strong>{folder}</strong>
-                  <span>
-                    {count} document{count === 1 ? '' : 's'}
-                  </span>
+                  <div className="folder-preview-stack" aria-hidden="true">{folderDocuments.slice(0, 3).map((document, index) => <span key={document.id} style={{ zIndex: 3 - index }}>{document.isPrivate ? <Lock /> : document.pages[0]?.thumbnailUrl || document.pages[0]?.imageUrl ? <img src={document.pages[0].thumbnailUrl || document.pages[0].imageUrl} alt="" /> : <FileText />}</span>)}{!folderDocuments.length ? <span><Folder /></span> : null}</div>
+                  <div className="folder-card-copy"><strong>{folder}</strong><span>{count} document{count === 1 ? '' : 's'}{folderDocuments.length ? ` · ${folderDocuments.reduce((total, document) => total + document.pages.length, 0)} pages` : ''}</span><small>{folderDocuments.slice(0, 2).map(document => document.isPrivate ? 'Private document' : document.title).join(' · ') || 'Ready for documents'}</small></div>
                   <ChevronRight />
                 </button>
               )
             })}
           </div>
+          {!creating ? <button className="folder-create-fab" onClick={() => setCreating(true)} aria-label="Create folder"><FolderOpen /><span>New folder</span></button> : null}
         </>
       )}
       {error && (
@@ -2220,11 +2260,15 @@ function TrashScreen({ onBack, onChanged }: { onBack: () => void; onChanged: () 
 function SettingsScreen({ documents, onChanged, onOpenTrash }: { documents: VaultDocument[]; onChanged: () => Promise<void>; onOpenTrash: () => void }) {
   const [guideOpen, setGuideOpen] = useState(false)
   const [policyOpen, setPolicyOpen] = useState(false)
+  const [textSize, setTextSize] = useState<TextSizePreference>(() => {
+    const saved = localStorage.getItem(TEXT_SIZE_KEY)
+    return saved === 'small' || saved === 'large' ? saved : 'default'
+  })
   const rows = [
     ['Document storage', documentStorageService.usesNativeFiles() ? 'Private app files' : 'Browser test storage'],
     ['Text recognition', 'This device'],
     ['Search indexing', 'This device'],
-    ['Analytics', 'None']
+    ['Usage tracking', 'Off — no analytics']
   ]
   return (
     <>
@@ -2274,6 +2318,12 @@ function SettingsScreen({ documents, onChanged, onOpenTrash }: { documents: Vaul
         </section>
       )}
       <StorageSecurityPanel />
+      <section className="text-size-card">
+        <header><strong>Text size</strong><small>Use a comfortable, consistent size throughout LOCAL</small></header>
+        <div role="group" aria-label="Text size">
+          {(['small', 'default', 'large'] as const).map(value => <button key={value} className={textSize === value ? 'selected' : ''} onClick={() => { setTextSize(value); applyTextSize(value) }} aria-pressed={textSize === value}><span className={`text-preview ${value}`}>Aa</span><strong>{value === 'default' ? 'Medium' : value[0].toUpperCase() + value.slice(1)}</strong></button>)}
+        </div>
+      </section>
       <AppProtectionPanel />
       <BackupPanel />
       <TagManagementPanel documents={documents} onChanged={onChanged} />
@@ -2660,6 +2710,23 @@ function ConfirmSheet({ title, message, confirmLabel, onConfirm, onCancel }: { t
     </div>
   )
 }
+function DesktopSidebar({ active, documentCount, onOpen }: { active: Screen['name']; documentCount: number; onOpen: (screen: 'home' | 'folders' | 'actions' | 'settings') => void }) {
+  const items = [
+    { name: 'home' as const, label: 'Home', detail: `${documentCount} ${documentCount === 1 ? 'document' : 'documents'}`, icon: <Home /> },
+    { name: 'folders' as const, label: 'Folders', detail: 'Organise your files', icon: <Folder /> },
+    { name: 'actions' as const, label: 'Document tools', detail: 'Combine, edit and export', icon: <Files /> },
+    { name: 'settings' as const, label: 'Settings', detail: 'Storage and preferences', icon: <Settings /> }
+  ]
+  return <aside className="desktop-sidebar" aria-label="Desktop navigation">
+    <div className="desktop-brand"><span><Archive /></span><div><strong>LOCAL</strong><small>Private document workspace</small></div></div>
+    <nav>
+      {items.map(item => <button key={item.name} className={active === item.name || (active === 'trash' && item.name === 'settings') ? 'active' : ''} aria-current={active === item.name ? 'page' : undefined} onClick={() => onOpen(item.name)}><span>{item.icon}</span><div><strong>{item.label}</strong><small>{item.detail}</small></div><ChevronRight /></button>)}
+    </nav>
+    <div className="desktop-local-note"><ShieldCheck /><div><strong>Processed in this browser</strong><small>Your documents are not uploaded. Export a backup before clearing browser data.</small></div></div>
+    <a className="desktop-download" href="https://github.com/leapfrog7/LOCAL/releases/latest/download/LOCAL-latest.apk"><Download /><span><strong>Get the Android app</strong><small>Camera scanning and device security</small></span><ExternalLink /></a>
+  </aside>
+}
+
 function NavButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
   return (
     <button className={`nav-tab${active ? ' active' : ''}`} aria-current={active ? 'page' : undefined} onClick={onClick}>

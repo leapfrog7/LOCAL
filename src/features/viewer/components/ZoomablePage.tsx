@@ -10,14 +10,40 @@ const clamp = (value: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, value))
 
 export interface PageViewState { scale: number; x: number; y: number }
 export interface ContinuousViewState { scale: number; scrollTop: number; scrollLeft: number }
+export interface FittedPageSize { width: number; height: number }
+
+export function fitPageWithin(sourceWidth: number, sourceHeight: number, containerWidth: number, containerHeight: number, rotation: number): FittedPageSize {
+  if (sourceWidth <= 0 || sourceHeight <= 0 || containerWidth <= 0 || containerHeight <= 0) return { width: 0, height: 0 }
+  const quarterTurn = Math.abs(rotation % 180) === 90
+  const rotatedWidth = quarterTurn ? sourceHeight : sourceWidth
+  const rotatedHeight = quarterTurn ? sourceWidth : sourceHeight
+  const scale = Math.min(containerWidth / rotatedWidth, containerHeight / rotatedHeight)
+  return { width: sourceWidth * scale, height: sourceHeight * scale }
+}
 
 export function ZoomablePage({ src, alt, rotation, highlights = [], annotations = [], annotationsVisible = true, annotationMode = 'pan', annotationColor = '#d32f2f', annotationWidth = .006, initialView, trimMargins = false, onAnnotationsChange, onViewChange, onNavigate }: { src: string; alt: string; rotation: number; highlights?: OCRBoundingBox[]; annotations?: AnnotationStroke[]; annotationsVisible?: boolean; annotationMode?: AnnotationMode; annotationColor?: string; annotationWidth?: number; initialView?: PageViewState; trimMargins?: boolean; onAnnotationsChange?: (strokes: AnnotationStroke[]) => void; onViewChange?: (view: PageViewState) => void; onNavigate?: (direction: -1 | 1) => void }) {
   const [view, setView] = useState<PageViewState>(() => initialView ?? { scale: 1, x: 0, y: 0 })
+  const [sourceSize, setSourceSize] = useState<FittedPageSize>({ width: 0, height: 0 })
+  const [fittedSize, setFittedSize] = useState<FittedPageSize>({ width: 0, height: 0 })
+  const containerRef = useRef<HTMLDivElement>(null)
   const pointers = useRef(new Map<number, { x: number; y: number }>())
   const gesture = useRef({ distance: 0, scale: 1 })
   const swipe = useRef<{ id: number; x: number; y: number } | null>(null)
   const lastTap = useRef<{ time: number; x: number; y: number } | null>(null)
   useEffect(() => { onViewChange?.(view) }, [view, onViewChange])
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || !sourceSize.width || !sourceSize.height) return
+    const update = () => {
+      const next = fitPageWithin(sourceSize.width, sourceSize.height, container.clientWidth, container.clientHeight, rotation)
+      setFittedSize(current => current.width === next.width && current.height === next.height ? current : next)
+    }
+    update()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update)
+    observer?.observe(container)
+    window.addEventListener('resize', update)
+    return () => { observer?.disconnect(); window.removeEventListener('resize', update) }
+  }, [rotation, sourceSize.height, sourceSize.width])
   const reset = () => setView({ scale: 1, x: 0, y: 0 })
   const zoom = (delta: number) => setView(current => {
     const scale = clamp(current.scale + delta)
@@ -75,11 +101,11 @@ export function ZoomablePage({ src, alt, rotation, highlights = [], annotations 
     })
   }
 
-  return <div className="zoom-page" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
-    <div className="zoom-page-content" style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})` }}><div className="zoom-page-document" style={{ transform: `rotate(${rotation}deg) scale(${trimMargins ? 1.08 : 1})` }}><img src={src} alt={alt} draggable={false} /><AnnotationLayer strokes={annotations} visible={annotationsVisible} mode={annotationMode} color={annotationColor} width={annotationWidth} onChange={strokes => onAnnotationsChange?.(strokes)} />{highlights.map((box, index) => <mark key={`${box.x}-${box.y}-${index}`} className="ocr-highlight" style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.width * 100}%`, height: `${box.height * 100}%` }} aria-hidden="true" />)}</div></div>
+  return <div ref={containerRef} className="zoom-page" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+    <div className="zoom-page-content" style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})` }}><div className={`zoom-page-document${fittedSize.width ? ' fitted' : ''}`} style={{ width: fittedSize.width || 1, height: fittedSize.height || 1, transform: `rotate(${rotation}deg) scale(${trimMargins ? 1.08 : 1})` }}><img src={src} alt={alt} draggable={false} onLoad={event => { const image = event.currentTarget; setSourceSize({ width: image.naturalWidth, height: image.naturalHeight }) }} /><AnnotationLayer strokes={annotations} visible={annotationsVisible} mode={annotationMode} color={annotationColor} width={annotationWidth} onChange={strokes => onAnnotationsChange?.(strokes)} />{highlights.map((box, index) => <mark key={`${box.x}-${box.y}-${index}`} className="ocr-highlight" style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.width * 100}%`, height: `${box.height * 100}%` }} aria-hidden="true" />)}</div></div>
     <div className="zoom-controls" aria-label="Page zoom controls">
       <button onClick={() => zoom(view.scale <= 1 ? -.25 : -.5)} disabled={view.scale <= MIN_SCALE} aria-label="Zoom out"><Minus /></button>
-      <button onClick={reset} aria-label="Reset zoom"><Maximize2 /><span>{Math.round(view.scale * 100)}%</span></button>
+      <button onClick={reset} aria-label="Fit page"><Maximize2 /><span>{Math.abs(view.scale - 1) < .01 ? 'Fit' : `${Math.round(view.scale * 100)}%`}</span></button>
       <button onClick={() => zoom(view.scale < 1 ? .25 : .5)} disabled={view.scale >= MAX_SCALE} aria-label="Zoom in"><Plus /></button>
     </div>
   </div>
