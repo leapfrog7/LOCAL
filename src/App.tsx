@@ -583,7 +583,7 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
           <ShieldCheck size={15} /> On-device
         </div>
       </header>
-      {!allDocuments.length ? <section className="hero">
+      {browserMode && !loading && !allDocuments.length ? <section className="hero">
         <div className="eyebrow">Your private document cabinet</div>
         <h2>
           Find any paper,
