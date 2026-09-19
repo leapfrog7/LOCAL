@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(PdfDownloadPlugin.class);
         registerPlugin(PdfImportPlugin.class);
+        registerPlugin(BackupExportPlugin.class);
         registerPlugin(DocumentScannerPlugin.class);
         registerPlugin(MlKitOcrPlugin.class);
         registerPlugin(BackgroundProcessingPlugin.class);

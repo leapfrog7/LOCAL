@@ -1,0 +1,32 @@
+# Android flow and security review — LOCAL 1.0.7
+
+Scope: backup creation/restore, protected PDF import/export, and adjacent document flows. This is a source review and targeted emulator validation, not a comprehensive penetration test. No crash log from the reported device was available.
+
+## Changes made
+
+- **Backup memory pressure:** creation previously accumulated the entire library's images, JSON, encoded plaintext, ciphertext, and bridge payload in memory. Android now serializes one page at a time, sends bounded chunks, and streams AES-256-GCM ciphertext to a temporary file. The encrypted v1 envelope remains compatible with existing restore. This removes the identified library-size memory multiplier; a single exceptionally large page can still be expensive.
+- **Save flow:** backup uses Android's save-location picker, distinguishes cancellation from success, and deletes temporary output on success, cancellation, or error. Private-document authentication remains required before reading private pages.
+- **Protected PDF import:** password prompt with wrong-password retry and cancellation, visible page preparation progress, disk-backed PDFBox processing, and an optional unlocked copy saved through Android's location picker. Opening uses a private temporary copy. The selected original is not rewritten by the import process. Cancelling the copy picker still allows import to continue.
+- **Temporary plaintext:** decrypted PDFs are removed once rendering finishes; rendered import files are released after conversion into document pages. Failed/cancelled imports clean their directory; a new process clears stale import cache.
+- **Restore input:** validates document/page IDs, duplicate IDs, required fields and embedded image URLs before any restore writes. This blocks path traversal through IDs and remote/file URLs masquerading as backed-up images. Restored documents no longer incorrectly claim their regenerated PDFs retain the old export password.
+- **Export integrity:** changing/removing a PDF password creates a new file before metadata is committed, preserving the previous PDF if encryption fails. Compression refuses to silently export a password-protected document without protection. Annotation save explains that regenerated PDFs need a new password.
+- **Sensitive UI/logging:** backup screens and the native password dialog prevent screenshots; Capacitor argument logging is disabled, since bridge arguments contain backup content and key material.
+
+## Remaining recommendations, in priority order
+
+1. **Stream restore as well as backup creation.** Legacy restore still reads/decrypts/parses the entire encrypted file in memory. Large backups can exceed a phone's available memory. Introduce authenticated, disk-backed restore staging and a restore-size/storage preflight. Do not describe this release as fixing every large-backup restore case.
+2. **Add crash-resilient restore transactions.** Current rollback handles caught errors, but replacing document assets is not a transaction spanning the filesystem and database. Process death or a storage error during rollback needs a journal and staged replacement. Until implemented, prefer “keep existing” or “restore as copies” for valuable libraries.
+3. **Preserve original imported PDFs alongside page previews.** Normal import rasterizes pages for LOCAL's OCR workflow, which loses interactive forms, original vector text, links, and signature validity in regenerated exports. The explicit unlocked-copy option uses PDFBox rather than reconstructing page images, but rewriting an encrypted PDF can still invalidate digital signatures.
+4. **Make transformation security explicit everywhere.** Combining, extracting, cleaning, or annotating can create new PDFs without the previous export password. Annotation now warns and compression blocks the silent downgrade; other document tools should offer a consistent “protect output” step before sharing. A PDF export password is distinct from making a document private inside LOCAL.
+5. **Complete long-operation UX.** Add cancel/resume for backup preparation and import/OCR, durable progress after navigation, and a clear “saved to …” receipt. PDF rendering now has progress/cancel; backup preparation still runs to the save picker.
+6. **Support Android “Open with LOCAL.”** The manifest currently provides only the launcher intent. A file opened from another app needs an explicit content-URI entry flow with the same password handling and temporary permission lifecycle.
+7. **Tidy Home's empty state and labels.** On the emulator, an empty library with no query says “No matching documents / Try another word or phrase.” Distinguish an empty library from no recent documents and no search matches. The three quick-action cards truncate labels/subtitles; shorter labels or vertically stacked icons would improve readability. Light status-bar icons also have poor contrast against the light Home background.
+
+## Verification
+
+- JavaScript regression coverage includes streaming serialization, Unicode, malformed restore identifiers/URLs, interrupted writes, PDF encryption failure preserving the original, and protected compression refusal.
+- Android instrumentation exercises authenticated backup encryption, tamper rejection, 32 MB streaming output, AES-256 PDF passwords, wrong-password retry, unlocked-copy readability, and original-file preservation.
+- Interactive Android checks confirmed the password prompt, incorrect-password retry, and unlocked-copy save picker. The saved two-page copy opened without a password in an independent PDF parser, and the protected original retained its SHA-256 checksum.
+- The updated Android backup wizard saved an empty test library through the system picker; its encrypted output decrypted independently using WebCrypto. A second run cancelled the picker, displayed “No backup was saved,” and left no backup temporary file. This UI smoke test complements the 32 MB native writer test; it is not a full large-library restore test.
+- Final checks: 73 JavaScript tests, seven app-level Android instrumentation tests, TypeScript build, Android release lint, and signed APK certificate/version verification. The unrelated third-party plugin instrumentation build had a Kotlin dependency conflict; the targeted LOCAL test command passed.
+- Physical-device reproduction of the user's crash and behavior under low-memory/process-kill conditions remain necessary.

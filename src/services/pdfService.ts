@@ -75,6 +75,7 @@ export async function persistSearchablePdf(vaultDocument: VaultDocument): Promis
 }
 
 async function ensurePersistedPdf(vaultDocument: VaultDocument) {
+  if (vaultDocument.pdfPasswordProtected && !vaultDocument.pdfPath) throw new Error('The protected PDF is missing. Add its password again before exporting.')
   return vaultDocument.pdfPath ? vaultDocument : persistSearchablePdf(vaultDocument)
 }
 
@@ -86,6 +87,7 @@ export const PDF_COMPRESSION: Record<PdfCompressionLevel, { label: string; descr
 }
 
 export async function downloadCompressedPdf(vaultDocument: VaultDocument, level: PdfCompressionLevel) {
+  if (vaultDocument.pdfPasswordProtected) throw new Error('Compression creates an unlocked PDF. Remove PDF password protection explicitly before using compression, or share the protected original.')
   const settings = PDF_COMPRESSION[level]
   const blob = await pdfService.create(vaultDocument, settings)
   const filename = safeFilename(`${vaultDocument.title} - compressed`)
@@ -106,13 +108,19 @@ export async function downloadCompressedPdf(vaultDocument: VaultDocument, level:
 export async function passwordProtectPdf(vaultDocument: VaultDocument, password: string): Promise<VaultDocument> {
   if (!Capacitor.isNativePlatform()) throw new Error('PDF password protection is available in the Android app.')
   if (password.length < 8) throw new Error('Use a PDF password of at least 8 characters.')
-  const unprotected = await persistSearchablePdf({ ...vaultDocument, pdfPasswordProtected: false })
-  await nativePdfDownload.protectPdf({ sourcePath: unprotected.pdfPath!, password })
-  return { ...unprotected, pdfPasswordProtected: true, updatedAt: new Date().toISOString() }
+  const blob = await pdfService.create(vaultDocument)
+  const path = await documentStorageService.persistVersionedPdf(vaultDocument.id, blob)
+  if (!path) throw new Error('Could not prepare the PDF for password protection.')
+  try {
+    await nativePdfDownload.protectPdf({ sourcePath: path, password })
+    return { ...vaultDocument, pdfPath: path, privatePdfPath: undefined, pdfGeneratedAt: new Date().toISOString(), pdfPasswordProtected: true, updatedAt: new Date().toISOString() }
+  } catch (error) { await documentStorageService.removeFile(path); throw error }
 }
 
 export async function removePdfPassword(vaultDocument: VaultDocument): Promise<VaultDocument> {
-  const unprotected = await persistSearchablePdf({ ...vaultDocument, pdfPasswordProtected: false })
+  const blob = await pdfService.create(vaultDocument)
+  const pdfPath = await documentStorageService.persistVersionedPdf(vaultDocument.id, blob)
+  const unprotected = { ...vaultDocument, pdfPath, privatePdfPath: undefined, pdfGeneratedAt: new Date().toISOString() }
   return { ...unprotected, pdfPasswordProtected: false, updatedAt: new Date().toISOString() }
 }
 

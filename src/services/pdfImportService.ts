@@ -4,8 +4,8 @@ import type { DocumentPage } from '../domain/types'
 import { nativeScansToPages } from './scannerService'
 
 type ImportedPage = { uri: string; name: string }
-type ImportResult = { cancelled: boolean; title?: string; pages: ImportedPage[] }
-type PdfImportPlugin = { pick(): Promise<ImportResult> }
+type ImportResult = { cancelled: boolean; title?: string; pages: ImportedPage[]; token?: string }
+type PdfImportPlugin = { pick(): Promise<ImportResult>; release(options: { token: string }): Promise<void> }
 
 const importer = registerPlugin<PdfImportPlugin>('PdfImport')
 
@@ -30,9 +30,15 @@ async function renderBrowserPdf(file: File) {
   const { GlobalWorkerOptions, getDocument } = await import('pdfjs-dist')
   GlobalWorkerOptions.workerSrc = pdfWorkerUrl
   const task = getDocument({ data: await file.arrayBuffer() })
-  const pdf = await task.promise
+  task.onPassword = (updatePassword: (password: string) => void, reason: number) => {
+    const password = window.prompt(reason === 2 ? 'Incorrect password. Enter the PDF password again:' : 'Enter the PDF password:')
+    if (password === null) { void task.destroy(); return }
+    updatePassword(password)
+  }
   const pages: File[] = []
   try {
+    const pdf = await task.promise
+    if (pdf.numPages > 200) throw new Error('PDF import supports up to 200 pages at a time.')
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber)
       const original = page.getViewport({ scale: 1 })
@@ -51,7 +57,6 @@ async function renderBrowserPdf(file: File) {
       page.cleanup()
     }
   } finally {
-    await pdf.cleanup()
     await task.destroy()
   }
   return pages
@@ -77,9 +82,13 @@ export const pdfImportService = {
     }
     const result = await importer.pick()
     if (result.cancelled) return { cancelled: true, title: '', pages: [] }
-    if (!result.pages.length) throw new Error('The selected PDF contains no pages.')
-    const files: File[] = []
-    for (const page of result.pages) files.push(await pageFile(page))
-    return { cancelled: false, title: result.title?.trim() || 'Imported PDF', pages: await nativeScansToPages(files) }
+    try {
+      if (!result.pages.length) throw new Error('The selected PDF contains no pages.')
+      const files: File[] = []
+      for (const page of result.pages) files.push(await pageFile(page))
+      return { cancelled: false, title: result.title?.trim() || 'Imported PDF', pages: await nativeScansToPages(files) }
+    } finally {
+      if (result.token) await importer.release({ token: result.token }).catch(() => undefined)
+    }
   },
 }

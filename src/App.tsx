@@ -245,7 +245,7 @@ function App() {
     )
   }
   const preparePdfImport = async (onStage: (stage: string) => void) => {
-    onStage('Choose a PDF from this device')
+    onStage('Opening PDF — enter its password if requested')
     const imported = await pdfImportService.pick()
     if (imported.cancelled) return null
     onStage(`Checking storage for ${imported.pages.length} page${imported.pages.length === 1 ? '' : 's'}`)
@@ -1455,7 +1455,9 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
     setActionError('')
     try {
       const updated = await passwordProtectPdf(document, pdfPassword)
-      await onChange(updated)
+      try { await onChange(updated) }
+      catch (error) { await documentStorageService.removeFile(updated.pdfPath); throw error }
+      if (document.pdfPath !== updated.pdfPath) await documentStorageService.removeFile(document.pdfPath)
       closeActions()
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not protect this PDF.')
@@ -1468,7 +1470,9 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
     setActionError('')
     try {
       const updated = await removePdfPassword(document)
-      await onChange(updated)
+      try { await onChange(updated) }
+      catch (error) { await documentStorageService.removeFile(updated.pdfPath); throw error }
+      if (document.pdfPath !== updated.pdfPath) await documentStorageService.removeFile(document.pdfPath)
       closeActions()
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not remove PDF password protection.')
@@ -1726,7 +1730,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
           </section>
         </div>
       )}
-      {annotationSaveOpen && <div className="action-sheet-layer" role="presentation"><section className="annotation-save-sheet" role="dialog" aria-modal="true" aria-label="Save annotations"><header><div><strong>Save annotations?</strong><span>Choose where to keep your changes.</span></div><button disabled={annotationBusy} onClick={() => setAnnotationSaveOpen(false)} aria-label="Continue annotating"><X /></button></header>{annotationError ? <p className="form-error" role="alert">{annotationError}</p> : null}<button disabled={annotationBusy} onClick={() => void saveAnnotations(true)}><Copy /><span><strong>Save a copy</strong><small>Keep the original unchanged</small></span></button><button disabled={annotationBusy} onClick={() => void saveAnnotations(false)}><Save /><span><strong>Save to original</strong><small>Update this document with your annotations</small></span></button><button disabled={annotationBusy} onClick={discardAnnotations}><Trash2 /><span><strong>Discard changes</strong><small>Return to the last saved annotations</small></span></button>{annotationBusy ? <p role="status"><span className="button-spinner" /> Saving annotations…</p> : null}</section></div>}
+      {annotationSaveOpen && <div className="action-sheet-layer" role="presentation"><section className="annotation-save-sheet" role="dialog" aria-modal="true" aria-label="Save annotations"><header><div><strong>Save annotations?</strong><span>{document.pdfPasswordProtected ? 'Edited PDFs will be unlocked. Add a PDF password again before sharing.' : 'Choose where to keep your changes.'}</span></div><button disabled={annotationBusy} onClick={() => setAnnotationSaveOpen(false)} aria-label="Continue annotating"><X /></button></header>{annotationError ? <p className="form-error" role="alert">{annotationError}</p> : null}<button disabled={annotationBusy} onClick={() => void saveAnnotations(true)}><Copy /><span><strong>Save a copy</strong><small>Keep the original unchanged</small></span></button><button disabled={annotationBusy} onClick={() => void saveAnnotations(false)}><Save /><span><strong>Save to original</strong><small>Update this document with your annotations</small></span></button><button disabled={annotationBusy} onClick={discardAnnotations}><Trash2 /><span><strong>Discard changes</strong><small>Return to the last saved annotations</small></span></button>{annotationBusy ? <p role="status"><span className="button-spinner" /> Saving annotations…</p> : null}</section></div>}
 
       {editing ? <div className="tool-sheet-layer"><section className="tool-sheet rename-sheet" role="dialog" aria-modal="true" aria-labelledby="rename-title">
         <form onSubmit={event => { event.preventDefault(); void saveTitle() }}>
@@ -2434,6 +2438,10 @@ function AppLockScreen({ checking, onUnlock }: { checking: boolean; onUnlock: ()
 }
 
 function BackupPanel() {
+  useEffect(() => {
+    void screenSecurityService.setEnabled(true).catch(() => undefined)
+    return () => { void screenSecurityService.setEnabled(false).catch(() => undefined) }
+  }, [])
   const [mode, setMode] = useState<'idle' | 'create' | 'restore'>('idle'),
     [passphrase, setPassphrase] = useState(''),
     [confirmation, setConfirmation] = useState(''),
@@ -2466,7 +2474,9 @@ function BackupPanel() {
   const beginCreate = async () => {
     setMode('create')
     setMessage('')
-    setSummary(await backupService.summary())
+    setSummary(null)
+    try { setSummary(await backupService.summary()) }
+    catch (error) { setMessage(error instanceof Error ? error.message : 'Could not read the library. Please try again.') }
   }
   const create = async () => {
     if (passphrase !== confirmation) {
@@ -2477,13 +2487,14 @@ function BackupPanel() {
     setMessage('Preparing encrypted backup…')
     try {
       const result = await backupService.create(passphrase, (done, total) => setProgress(`Preparing document ${done} of ${total}`))
-      setMessage(`${result.count} documents encrypted. Keep the file and passphrase separately.`)
+      setMessage(result.cancelled ? 'Save cancelled. No backup was saved.' : `Backup saved: ${result.count} documents encrypted. Keep the file and passphrase separately.`)
       setProgress('')
       setPassphrase('')
       setConfirmation('')
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Backup failed.')
     } finally {
+      setProgress('')
       setBusy(false)
     }
   }
@@ -2639,7 +2650,7 @@ function BackupPanel() {
         ref={input}
         className="hidden-input"
         type="file"
-        accept=".localbackup,application/json"
+        accept=".localbackup,application/json,application/octet-stream"
         onChange={(event) => {
           const file = event.target.files?.[0] ?? null
           setRestoreFile(file)

@@ -1,4 +1,4 @@
-import { Capacitor } from '@capacitor/core'
+import { Capacitor, registerPlugin } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
 import type { DocumentPage, VaultDocument } from '../domain/types'
@@ -7,9 +7,16 @@ import { documentStorageService } from './documentStorageService'
 import { appLockService } from './appLockService'
 import { privateStorageService } from './privateStorageService'
 import { folderService } from './folderService'
+import { validateBackupPayload } from './backupValidation'
 
 const FORMAT = 'local-encrypted-backup-v1'
 const ITERATIONS = 250_000
+const nativeBackup = registerPlugin<{
+  begin(options: { key: string; iv: string; header: string }): Promise<{ session: string }>
+  append(options: { session: string; text: string }): Promise<void>
+  finish(options: { session: string; filename: string }): Promise<{ cancelled: boolean }>
+  abort(options: { session: string }): Promise<void>
+}>('BackupExport')
 export interface BackupPayload {
   format: 'local-backup-v1' | 'local-backup-v2'
   createdAt: string
@@ -70,10 +77,61 @@ async function portableDocument(document: VaultDocument) {
     ...document,
     pages,
     pdfPath: undefined,
+    pdfPasswordProtected: false,
     pdfGeneratedAt: undefined,
     storageProtection: undefined,
     privateSessionId: undefined,
     privatePdfPath: undefined
+  }
+}
+
+// Keep only one page's images in JS memory; native code streams authenticated
+// ciphertext to disk. The format remains compatible with existing restores.
+export async function writeBackupJson(source: VaultDocument[], createdAt: string, folders: string[], write: (text: string) => Promise<void>, onProgress?: (done: number, total: number) => void) {
+  await write(`{"format":"local-backup-v2","createdAt":${JSON.stringify(createdAt)},"folders":${JSON.stringify(folders)},"documents":[`)
+  for (const [index, document] of source.entries()) {
+    const visible = document.isPrivate ? await documentsRepository.reveal(document.id) : document
+    if (!visible) throw new Error('A private document could not be opened for backup.')
+    try {
+      const metadata = await portableDocument({ ...visible, pages: [] })
+      const { pages: _pages, ...fields } = metadata
+      await write(`${index ? ',' : ''}${JSON.stringify(fields).slice(0, -1)},"pages":[`)
+      for (const [pageIndex, page] of visible.pages.entries()) {
+        await write(`${pageIndex ? ',' : ''}${JSON.stringify(await portablePage(page))}`)
+      }
+      await write(']}')
+      onProgress?.(index + 1, source.length)
+    } finally { await privateStorageService.clearSession(visible.privateSessionId) }
+  }
+  await write(']}')
+}
+
+async function createNativeBackup(source: VaultDocument[], passphrase: string, onProgress?: (done: number, total: number) => void) {
+  if (passphrase.length < 8) throw new Error('Use a passphrase of at least 8 characters.')
+  const createdAt = new Date().toISOString(), filename = `LOCAL-backup-${createdAt.slice(0, 10)}.localbackup`
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12))
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveBits'])
+  const key = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: ITERATIONS }, material, 256))
+  const header = JSON.stringify({ format: FORMAT, createdAt, kdf: 'PBKDF2-SHA256', iterations: ITERATIONS, salt: bytesToBase64(salt), iv: bytesToBase64(iv) }).slice(0, -1) + ',"ciphertext":"'
+  let session: string | undefined
+  try {
+    session = (await nativeBackup.begin({ key: bytesToBase64(key), iv: bytesToBase64(iv), header })).session
+    key.fill(0)
+    const write = async (text: string) => {
+      for (let offset = 0; offset < text.length;) {
+        let end = Math.min(offset + 65536, text.length)
+        // Do not divide a UTF-16 surrogate pair across independently encoded chunks.
+        if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--
+        await nativeBackup.append({ session: session!, text: text.slice(offset, end) })
+        offset = end
+      }
+    }
+    await writeBackupJson(source, createdAt, await folderService.list(source), write, onProgress)
+    const result = await nativeBackup.finish({ session, filename })
+    return { count: source.length, filename, cancelled: result.cancelled }
+  } finally {
+    key.fill(0)
+    if (session) await nativeBackup.abort({ session }).catch(() => undefined)
   }
 }
 
@@ -116,13 +174,13 @@ export async function encryptBackupPayload(payload: BackupPayload, passphrase: s
 export async function decryptBackupPayload(source: string | Blob, passphrase: string): Promise<BackupPayload> {
   try {
     const envelope = JSON.parse(typeof source === 'string' ? source : await source.text()) as EncryptedEnvelope
-    if (envelope.format !== FORMAT || envelope.kdf !== 'PBKDF2-SHA256') throw new Error('Unsupported backup format.')
+    if (envelope.format !== FORMAT || envelope.kdf !== 'PBKDF2-SHA256' || envelope.iterations !== ITERATIONS) throw new Error('Unsupported backup format.')
     const salt = base64ToBytes(envelope.salt),
       iv = base64ToBytes(envelope.iv),
       key = await keyFor(passphrase, salt, ['decrypt'])
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, base64ToBytes(envelope.ciphertext))
     const payload = JSON.parse(new TextDecoder().decode(plaintext)) as BackupPayload
-    if (!['local-backup-v1', 'local-backup-v2'].includes(payload.format) || !Array.isArray(payload.documents)) throw new Error('Invalid backup contents.')
+    validateBackupPayload(payload)
     return payload
   } catch (error) {
     if (error instanceof Error && /unsupported|invalid backup/i.test(error.message)) throw error
@@ -171,6 +229,7 @@ export const backupService = {
     const source = await documentsRepository.list(),
       documents: VaultDocument[] = []
     if (source.some((document) => document.isPrivate)) await appLockService.authenticate()
+    if (Capacitor.isNativePlatform()) return createNativeBackup(source, passphrase, onProgress)
     for (const document of source) {
       const visible = document.isPrivate ? await documentsRepository.reveal(document.id) : document
       if (!visible) throw new Error('A private document could not be opened for backup.')
@@ -186,7 +245,7 @@ export const backupService = {
       blob = await encryptBackupPayload({ format: 'local-backup-v2', createdAt, documents, folders }, passphrase)
     const filename = `LOCAL-backup-${createdAt.slice(0, 10)}.localbackup`
     await deliverBackup(blob, filename)
-    return { count: documents.length, filename }
+    return { count: documents.length, filename, cancelled: false }
   },
 
   async inspect(file: File, passphrase: string) {
@@ -204,6 +263,7 @@ export const backupService = {
   },
 
   async restorePayload(payload: BackupPayload, policy: RestoreConflictPolicy, onProgress?: (completed: number, total: number) => void) {
+    validateBackupPayload(payload)
     const existing = await documentsRepository.list(),
       existingById = new Map(existing.map((document) => [document.id, document]))
     const snapshots: VaultDocument[] = [],
@@ -238,6 +298,7 @@ export const backupService = {
           privateSessionId: undefined,
           privatePdfPath: undefined,
           pdfPath: undefined,
+          pdfPasswordProtected: false,
           pdfGeneratedAt: undefined,
           pages: source.pages.map((page) => ({
             ...page,
