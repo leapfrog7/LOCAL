@@ -1,8 +1,10 @@
+import { DocumentText } from './features/viewer/components/DocumentText'
+import { copyDocumentText } from './services/textSelection'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { App as CapacitorApp } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
-import { Archive, ArrowLeft, Bookmark, Camera, Check, ChevronRight, CircleHelp, Clock3, Copy, Crop, Download, Eraser, Eye, EyeOff, ExternalLink, FileText, FileUp, Files, Folder, FolderOpen, GripVertical, Highlighter, Home, ImagePlus, LockKeyhole, Moon, MoreHorizontal, MousePointer2, Redo2, RotateCw, Save, ScanLine, Search, Settings, ShieldCheck, ChevronDown, ChevronUp, Share2, Sun, Tag, Trash2, Undo2, Upload, Volume2, VolumeX, X, PauseCircle, RefreshCw, Pencil, Lock, Unlock, RotateCcw, AlertTriangle, Grid2X2, List, SlidersHorizontal, BookOpen, Rows3, AppWindow, Hash } from 'lucide-react'
+import { PenTool, Archive, ArrowLeft, Bookmark, Camera, Check, ChevronRight, CircleHelp, Clock3, Copy, Crop, Download, Eraser, Eye, EyeOff, ExternalLink, FileText, FileUp, Files, Folder, FolderOpen, GripVertical, Highlighter, Home, ImagePlus, LockKeyhole, Moon, MoreHorizontal, MousePointer2, Redo2, RotateCw, Save, ScanLine, Search, Settings, ShieldCheck, ChevronDown, ChevronUp, Share2, Sun, Tag, Trash2, Undo2, Upload, Volume2, VolumeX, X, PauseCircle, RefreshCw, Pencil, Lock, Unlock, RotateCcw, AlertTriangle, Grid2X2, List, SlidersHorizontal, BookOpen, Rows3, AppWindow, Hash } from 'lucide-react'
 import type { AnnotationStroke, DocumentPage, Screen, VaultDocument } from './domain/types'
 import { documentsRepository } from './services/documentRepository'
 import { cancelProcessing, processDocument, resumePendingProcessing, retryProcessing } from './services/processingQueue'
@@ -314,7 +316,8 @@ function App() {
   const insertFromActions = async (target: VaultDocument, source: VaultDocument, indexes: number[], at: number, saveMode: ActionSaveMode) => withVisibleDocuments([target, source], async ([visibleTarget, visibleSource]) => actionResult(await insertDocumentPages(visibleTarget, visibleSource, indexes, at), target, saveMode))
   const cleanFromActions = async (document: VaultDocument, indexes: number[], saveMode: ActionSaveMode) => withVisibleDocuments([document], async ([visible]) => actionResult(await removeDocumentPages(visible, indexes), document, saveMode))
   const analyseFromActions = async (document: VaultDocument) => withVisibleDocuments([document], async ([visible]) => analyseDocumentPages(visible))
-  const exportTextFromActions = async (document: VaultDocument, format: 'txt' | 'md') => withVisibleDocuments([document], async ([visible]) => exportOcrText(visible, format))
+  const exportTextFromActions = async (document: VaultDocument, format: 'txt' | 'md', indexes: number[]) => withVisibleDocuments([document], async ([visible]) => exportOcrText(visible, format, indexes))
+  const copyTextFromActions = async (document: VaultDocument, indexes: number[]) => withVisibleDocuments([document], async ([visible]) => copyDocumentText(visible, indexes))
   const renameFromActions = async (selected: VaultDocument[], template: string) => {
     if (selected.some((document) => document.isPrivate)) await appLockService.authenticate()
     const date = new Date().toISOString().slice(0, 10)
@@ -383,6 +386,7 @@ function App() {
     privateViewerId.current = document?.isPrivate ? screen.id : undefined
     return document ? (
       <Viewer
+        key={document.id}
         document={document}
         browserMode={!nativePlatform}
         initialPage={screen.page}
@@ -433,7 +437,7 @@ function App() {
         {screen.name === 'home' && searchError ? <p className="sheet-error" role="alert">{searchError} <button onClick={() => void refresh()}>Retry search</button></p> : null}
         {screen.name === 'home' && <Library documents={searchResults.map((result) => result.document)} allDocuments={documents} searchResults={searchResults} query={query} setQuery={setQuery} searchFilter={searchFilter} setSearchFilter={setSearchFilter} loading={loading || completedSearch !== searchKey} browserMode={!nativePlatform} onScan={() => open({ name: 'capture' })} onTools={() => open({ name: 'actions' })} onPrepareImport={preparePdfImport} onCommitImport={saveNewDocument} onBulkUpdate={bulkUpdateDocuments} onBulkDelete={bulkDeleteDocuments} onOpen={(id, page) => void openDocument(id, page, parseAdvancedQuery(query).text)} />}
         {screen.name === 'folders' && <Folders documents={documents} onOpen={(id) => void openDocument(id)} onChange={refresh} />}
-        {screen.name === 'actions' && <ActionsScreen documents={documents} onCombine={combineSelectedDocuments} onExtract={extractFromActions} onReorder={reorderFromActions} onCompress={compressFromActions} onInsert={insertFromActions} onClean={cleanFromActions} onAnalyse={analyseFromActions} onRename={renameFromActions} onExportText={exportTextFromActions} />}
+        {screen.name === 'actions' && <ActionsScreen documents={documents} onCombine={combineSelectedDocuments} onExtract={extractFromActions} onReorder={reorderFromActions} onCompress={compressFromActions} onInsert={insertFromActions} onClean={cleanFromActions} onAnalyse={analyseFromActions} onRename={renameFromActions} onCopyText={copyTextFromActions} onExportText={exportTextFromActions} />}
         {screen.name === 'settings' && <SettingsScreen documents={documents} onChanged={refresh} onOpenTrash={() => open({ name: 'trash' })} />}
         {screen.name === 'trash' && <TrashScreen onBack={() => open({ name: 'settings' })} onChanged={refresh} />}
       </main>
@@ -1138,6 +1142,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
   const [shareState, setShareState] = useState<'idle' | 'working' | 'error'>('idle')
   const [jobAction, setJobAction] = useState<'idle' | 'working'>('idle')
   const [actionsOpen, setActionsOpen] = useState(false)
+  const [viewControlsOpen, setViewControlsOpen] = useState(false)
   const [actionView, setActionView] = useState<'main' | 'folder' | 'password' | 'private' | 'tags' | 'text'>('main')
   const [customFolder, setCustomFolder] = useState('')
   const [folderOptions, setFolderOptions] = useState<string[]>(['Unfiled'])
@@ -1155,8 +1160,6 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
   const [chromeVisible, setChromeVisible] = useState(true)
   const [speaking, setSpeaking] = useState(false)
   const [annotationOpen, setAnnotationOpen] = useState(false)
-  const annotationOpenRef = useRef(false)
-  annotationOpenRef.current = annotationOpen
   const [annotationMode, setAnnotationMode] = useState<'pan' | 'pen' | 'highlighter' | 'eraser'>('pan')
   const [annotationColor, setAnnotationColor] = useState('#d32f2f')
   const [annotationWidth, setAnnotationWidth] = useState(.006)
@@ -1169,8 +1172,9 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
   const [annotationError, setAnnotationError] = useState('')
   const [annotationNotice, setAnnotationNotice] = useState('')
   const annotationDraftRef = useRef(annotationDraft)
-  const annotationAutosaveTimer = useRef(0)
-  const annotationAutosavePending = useRef<Promise<void>>(Promise.resolve())
+  const annotationPending = useRef(false)
+  const previousReadingMode = useRef(readingMode)
+  const annotationExitAfterSave = useRef(false)
   const readingState = useRef<ViewerReadingState>({ ...savedReadingState, page: Math.min(Math.max(restoredPage, 0), Math.max(0, document.pages.length - 1)) })
   const readingStateTimer = useRef(0)
   const saveReadingState = useCallback((changes: Partial<ViewerReadingState>) => {
@@ -1182,7 +1186,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
     window.clearTimeout(readingStateTimer.current)
     viewerStateService.write(document.id, readingState.current)
   }, [document.id])
-  useEffect(() => { saveReadingState({ page, mode: readingMode }) }, [page, readingMode, saveReadingState])
+  useEffect(() => { saveReadingState({ page, mode: annotationOpen ? previousReadingMode.current : readingMode }) }, [page, readingMode, annotationOpen, saveReadingState])
   useEffect(() => { saveReadingState({ theme: viewerTheme, keepAwake, trimMargins, bookmarks }) }, [viewerTheme, keepAwake, trimMargins, bookmarks, saveReadingState])
   const saveSingleView = useCallback((single: ViewerReadingState['single']) => saveReadingState({ single }), [saveReadingState])
   const saveContinuousView = useCallback((continuous: ViewerReadingState['continuous']) => saveReadingState({ continuous }), [saveReadingState])
@@ -1190,8 +1194,8 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
   const revealChrome = useCallback(() => {
     setChromeVisible(true)
     window.clearTimeout(chromeTimer.current)
-    if (!browserMode && !editing) chromeTimer.current = window.setTimeout(() => setChromeVisible(false), 5200)
-  }, [browserMode, editing])
+    if (!browserMode && !editing && !annotationOpen && !annotationSaveOpen && !actionsOpen && !viewControlsOpen && readingMode !== 'text') chromeTimer.current = window.setTimeout(() => setChromeVisible(false), 5200)
+  }, [browserMode, editing, annotationOpen, annotationSaveOpen, actionsOpen, viewControlsOpen, readingMode])
   useEffect(() => { revealChrome(); return () => window.clearTimeout(chromeTimer.current) }, [page, readingMode, revealChrome])
   useEffect(() => {
     if (!keepAwake) return
@@ -1219,49 +1223,70 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
     ...document,
     pages: document.pages.map(item => ({ ...item, annotations: { version: 1 as const, strokes: draft[item.id] ?? [] } }))
   })
-  const queueAnnotationAutosave = (draft: Record<string, AnnotationStroke[]>) => {
+  // Drafts stay in this viewer until the user explicitly chooses a save destination.
+  const updateAnnotationDraft = (draft: Record<string, AnnotationStroke[]>) => {
     annotationDraftRef.current = draft
-    window.clearTimeout(annotationAutosaveTimer.current)
-    annotationAutosaveTimer.current = window.setTimeout(() => {
-      const durableDraft = { ...documentWithAnnotations(annotationDraftRef.current), pdfPath: undefined, privatePdfPath: undefined, pdfGeneratedAt: undefined, pdfPasswordProtected: false, updatedAt: new Date().toISOString() }
-      annotationAutosavePending.current = onChange(durableDraft).then(() => { setAnnotationNotice('Draft saved') }).catch(() => { setAnnotationNotice('Draft save will retry when you tap Done') })
-    }, 700)
   }
-  useEffect(() => () => {
-    window.clearTimeout(annotationAutosaveTimer.current)
-    if (annotationOpenRef.current) void onChange({ ...documentWithAnnotations(annotationDraftRef.current), pdfPath: undefined, privatePdfPath: undefined, pdfGeneratedAt: undefined, pdfPasswordProtected: false, updatedAt: new Date().toISOString() })
-  }, [document.id])
+  const beginAnnotations = () => {
+    previousReadingMode.current = readingMode
+    const draft = Object.fromEntries(document.pages.map(item => [item.id, item.annotations?.strokes ?? []]))
+    annotationDraftRef.current = draft
+    setAnnotationDraft(draft); setAnnotationUndo({}); setAnnotationRedo({})
+    setAnnotationError(''); setAnnotationNotice(''); setAnnotationsVisible(true)
+    annotationExitAfterSave.current = false
+    setReadingMode('single'); setAnnotationOpen(true); setAnnotationMode('pen')
+    setChromeVisible(true); setThumbnailsVisible(false)
+  }
+  const discardAnnotations = () => {
+    const draft = Object.fromEntries(document.pages.map(item => [item.id, item.annotations?.strokes ?? []]))
+    annotationDraftRef.current = draft
+    setAnnotationDraft(draft); setAnnotationUndo({}); setAnnotationRedo({})
+    setAnnotationMode('pan'); setAnnotationOpen(false); setAnnotationSaveOpen(false)
+    setReadingMode(previousReadingMode.current)
+    if (annotationExitAfterSave.current) onBack()
+  }
+  const finishAnnotations = (leave = false) => {
+    if (annotationPending.current) return
+    annotationExitAfterSave.current = leave
+    const changed = document.pages.some(item => JSON.stringify(annotationDraftRef.current[item.id] ?? []) !== JSON.stringify(item.annotations?.strokes ?? []))
+    if (changed) { setAnnotationError(''); setAnnotationSaveOpen(true) }
+    else discardAnnotations()
+  }
   const changeAnnotations = (pageId: string, strokes: AnnotationStroke[]) => {
-    setAnnotationDraft(current => {
-      const previous = current[pageId] ?? []
-      if (strokes.length !== previous.length) {
-        setAnnotationUndo(history => ({ ...history, [pageId]: [...(history[pageId] ?? []), previous] }))
-        setAnnotationRedo(history => ({ ...history, [pageId]: [] }))
-      }
-      const next = { ...current, [pageId]: strokes }
-      queueAnnotationAutosave(next)
-      return next
-    })
+    const draft = annotationDraftRef.current, previous = draft[pageId] ?? []
+    if (strokes === previous) return
+    if (strokes.length !== previous.length) {
+      setAnnotationUndo(history => ({ ...history, [pageId]: [...(history[pageId] ?? []), previous] }))
+      setAnnotationRedo(history => ({ ...history, [pageId]: [] }))
+    }
+    const next = { ...draft, [pageId]: strokes }
+    updateAnnotationDraft(next); setAnnotationDraft(next)
   }
-  const undoAnnotation = () => current && setAnnotationUndo(history => {
-    const entries = history[current.id] ?? []
-    if (!entries.length) return history
-    const previous = entries.at(-1)!
-    setAnnotationDraft(draft => { setAnnotationRedo(redo => ({ ...redo, [current.id]: [...(redo[current.id] ?? []), draft[current.id] ?? []] })); const next = { ...draft, [current.id]: previous }; queueAnnotationAutosave(next); return next })
-    return { ...history, [current.id]: entries.slice(0, -1) }
-  })
-  const redoAnnotation = () => current && setAnnotationRedo(history => {
-    const entries = history[current.id] ?? []
-    if (!entries.length) return history
-    const next = entries.at(-1)!
-    setAnnotationDraft(draft => { setAnnotationUndo(undo => ({ ...undo, [current.id]: [...(undo[current.id] ?? []), draft[current.id] ?? []] })); const updated = { ...draft, [current.id]: next }; queueAnnotationAutosave(updated); return updated })
-    return { ...history, [current.id]: entries.slice(0, -1) }
-  })
+  const undoAnnotation = () => {
+    if (!current) return
+    const history = annotationUndo[current.id] ?? []
+    if (!history.length) return
+    const draft = annotationDraftRef.current
+    setAnnotationRedo(redo => ({ ...redo, [current.id]: [...(redo[current.id] ?? []), draft[current.id] ?? []] }))
+    const next = { ...draft, [current.id]: history.at(-1)! }
+    updateAnnotationDraft(next); setAnnotationDraft(next)
+    setAnnotationUndo(undo => ({ ...undo, [current.id]: history.slice(0, -1) }))
+  }
+  const redoAnnotation = () => {
+    if (!current) return
+    const history = annotationRedo[current.id] ?? []
+    if (!history.length) return
+    const draft = annotationDraftRef.current
+    setAnnotationUndo(undo => ({ ...undo, [current.id]: [...(undo[current.id] ?? []), draft[current.id] ?? []] }))
+    const next = { ...draft, [current.id]: history.at(-1)! }
+    updateAnnotationDraft(next); setAnnotationDraft(next)
+    setAnnotationRedo(redo => ({ ...redo, [current.id]: history.slice(0, -1) }))
+  }
   const saveAnnotations = async (copy: boolean) => {
+    if (annotationPending.current) return
+    annotationPending.current = true
     setAnnotationBusy(true); setAnnotationError('')
-    window.clearTimeout(annotationAutosaveTimer.current)
     try {
-      await annotationAutosavePending.current
       const prepared = documentWithAnnotations(annotationDraftRef.current)
       if (copy) await onSaveCopy(await annotationCopy(prepared))
       else {
@@ -1271,26 +1296,20 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
         if (previousPdfPath && previousPdfPath !== updated.pdfPath) await documentStorageService.removeFile(previousPdfPath)
       }
       setAnnotationMode('pan'); setAnnotationOpen(false); setAnnotationSaveOpen(false); setAnnotationNotice(copy ? 'Annotated copy saved' : 'Annotations saved')
+      setReadingMode(previousReadingMode.current)
+      if (!copy && annotationExitAfterSave.current) onBack()
     } catch (error) { setAnnotationError(error instanceof Error ? error.message : 'Annotations could not be saved safely.') }
-    finally { setAnnotationBusy(false) }
+    finally { annotationPending.current = false; setAnnotationBusy(false) }
   }
   useEffect(() => () => { if ('speechSynthesis' in window) window.speechSynthesis.cancel() }, [])
   const [externalState, setExternalState] = useState<'idle' | 'working'>('idle')
-  const [thumbnailsVisible, setThumbnailsVisible] = useState(true)
-  const [viewControlsOpen, setViewControlsOpen] = useState(false)
-  const [textSelection, setTextSelection] = useState({ start: 0, end: 0 })
-  const [copyStatus, setCopyStatus] = useState('')
+  const [thumbnailsVisible, setThumbnailsVisible] = useState(false)
   const current = document.pages[page]
   const detectedCodes = useMemo(() => document.pages.flatMap((item) => item.barcodes ?? []), [document.pages])
   const matches = useMemo(() => pageMatches(document, withinQuery), [document, withinQuery])
   const [activeMatchIndex, setActiveMatchIndex] = useState(0)
   const activeMatch = matches[activeMatchIndex]
-  useEffect(() => {
-    if (browserMode || readingMode !== 'single') return
-    setThumbnailsVisible(true)
-    const timer = window.setTimeout(() => setThumbnailsVisible(false), 2400)
-    return () => window.clearTimeout(timer)
-  }, [browserMode, page, readingMode])
+
   const navigatePage = (direction: -1 | 1) => setPage(currentPage => Math.max(0, Math.min(document.pages.length - 1, currentPage + direction)))
   useEffect(() => {
     void screenSecurityService.setEnabled(Boolean(document.isPrivate))
@@ -1358,11 +1377,12 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
   }
   useEffect(() => {
     const back = (raw: Event) => {
-      if (deleteConfirm) setDeleteConfirm(false)
+      if (thumbnailsVisible) setThumbnailsVisible(false)
+      else if (deleteConfirm) setDeleteConfirm(false)
       else if (actionsOpen) closeActions()
       else if (viewControlsOpen) setViewControlsOpen(false)
-      else if (annotationSaveOpen) setAnnotationSaveOpen(false)
-      else if (annotationOpen) void saveAnnotations(false)
+      else if (annotationSaveOpen) { if (!annotationPending.current) setAnnotationSaveOpen(false) }
+      else if (annotationOpen) finishAnnotations(true)
       else if (searchOpen) { setWithinQuery(''); setSearchOpen(false) }
       else if (editingPage) setEditingPage(false)
       else if (editing) { if (!renamePending.current) { setEditing(false); setTitle(document.title) } }
@@ -1371,7 +1391,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
     }
     window.addEventListener('local:back', back)
     return () => window.removeEventListener('local:back', back)
-  }, [deleteConfirm, actionsOpen, viewControlsOpen, annotationSaveOpen, annotationOpen, searchOpen, editingPage, editing, document.title])
+  }, [thumbnailsVisible, deleteConfirm, actionsOpen, viewControlsOpen, annotationSaveOpen, annotationOpen, searchOpen, editingPage, editing, document, onBack])
   const openFolderPicker = async () => {
     setActionView('folder')
     setFoldersLoading(true)
@@ -1492,19 +1512,6 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
       setActionBusy(false)
     }
   }
-  const copyPageText = async (selectionOnly: boolean) => {
-    const text = current?.ocrText.trim() ?? ''
-    const selected = text.slice(textSelection.start, textSelection.end)
-    const value = selectionOnly ? selected : text
-    if (!value) return
-    try {
-      await navigator.clipboard.writeText(value)
-      setCopyStatus(selectionOnly ? 'Selected text copied' : 'All page text copied')
-      window.setTimeout(() => setCopyStatus(''), 1400)
-    } catch {
-      setCopyStatus('Could not copy text. Select it and use the system Copy action.')
-    }
-  }
   const highlights = activeMatch?.pageIndex === page ? activeMatch.wordIndexes.flatMap((index) => current.ocrWords?.[index]?.boundingBox ?? []) : []
   const downloadPdf = async () => {
     setExportState('working')
@@ -1579,7 +1586,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
   return (
     <div className={`full-screen viewer-screen viewer-theme-${viewerTheme}${browserMode ? ' desktop-viewer' : ''}${chromeVisible ? '' : ' chrome-hidden'}${trimMargins ? ' trim-margins' : ''}`}>
       <header className="top-bar">
-        <button onClick={onBack} aria-label="Back">
+        <button disabled={annotationBusy} onClick={() => annotationOpen ? finishAnnotations(true) : onBack()} aria-label="Back">
           <ArrowLeft />
         </button>
         <div>
@@ -1587,10 +1594,10 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
           <span>{document.folder} · {document.pages.length} pages</span>
         </div>
         <div className="viewer-header-actions">
-          <button className={annotationOpen ? 'active annotation-active' : ''} onClick={() => { if (annotationOpen) void saveAnnotations(false); else { setReadingMode('single'); setAnnotationOpen(true); setAnnotationMode('pen'); setChromeVisible(true); setThumbnailsVisible(false); setAnnotationNotice('') } }} aria-label={annotationOpen ? 'Finish annotating' : 'Annotate document'}>{annotationOpen ? <Check /> : <Pencil />}</button>
-          <button className={searchOpen ? 'active' : ''} onClick={() => setSearchOpen((open) => !open)} aria-label="Search this document"><Search /></button>
-          <button className={viewControlsOpen ? 'active' : ''} onClick={() => setViewControlsOpen(true)} aria-label="Reading view" aria-haspopup="dialog"><BookOpen /></button>
-          <button onClick={() => setActionsOpen(true)} aria-label="More actions" aria-haspopup="dialog"><MoreHorizontal /></button>
+          <button className={annotationOpen ? 'active annotation-active' : ''} onClick={() => { if (annotationOpen) finishAnnotations(); else beginAnnotations() }} aria-label={annotationOpen ? 'Finish annotating' : 'Annotate document'}>{annotationOpen ? <Check /> : <PenTool />}</button>
+          <button disabled={annotationOpen} className={searchOpen ? 'active' : ''} onClick={() => setSearchOpen((open) => !open)} aria-label="Search this document"><Search /></button>
+          <button disabled={annotationOpen} className={viewControlsOpen ? 'active' : ''} onClick={() => setViewControlsOpen(true)} aria-label="Reading view" aria-haspopup="dialog"><BookOpen /></button>
+          <button disabled={annotationOpen} onClick={() => setActionsOpen(true)} aria-label="More actions" aria-haspopup="dialog"><MoreHorizontal /></button>
         </div>
       </header>
       <div className={`processing-banner ${document.status === 'error' ? 'has-error' : ''} ${document.status === 'ocr_pending' || document.status === 'ocr_processing' ? 'working' : ''}`}>
@@ -1667,9 +1674,10 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
           <span>{detectedCodes[0].displayValue || detectedCodes[0].rawValue}</span>
         </div>
       )}
-      <section className={`document-canvas mode-${readingMode}`} onClick={(event) => { if (!(event.target as HTMLElement).closest('.zoom-controls,.show-pages-button,.viewer-scrubber')) { if (browserMode) revealChrome(); else chromeVisible ? setChromeVisible(false) : revealChrome() } }}>
-        {readingMode === 'single' && current ? <ZoomablePage key={current.id} src={current.imageUrl} alt={`Page ${page + 1}`} rotation={current.rotation} highlights={highlights} annotations={annotationDraft[current.id] ?? []} annotationsVisible={annotationsVisible} annotationMode={annotationMode} annotationColor={annotationColor} annotationWidth={annotationWidth} initialView={readingState.current.single} trimMargins={trimMargins} onAnnotationsChange={strokes => changeAnnotations(current.id, strokes)} onViewChange={saveSingleView} onNavigate={navigatePage} /> : readingMode === 'continuous' || readingMode === 'facing' ? <ContinuousPages pages={document.pages.map(item => ({ ...item, annotations: { version: 1, strokes: annotationDraft[item.id] ?? [] } }))} currentPage={page} initialView={readingState.current.continuous} trimMargins={trimMargins} facing={readingMode === 'facing'} annotationsVisible={annotationsVisible} onViewChange={saveContinuousView} onPage={setPage} /> : <div className="ocr-reading-view"><header><div><strong>Text view</strong><span>Offline text recognition may contain errors</span></div><button onClick={toggleReadAloud}>{speaking ? <VolumeX /> : <Volume2 />} {speaking ? 'Stop' : 'Read from here'}</button></header>{document.pages.map((item, index) => <article key={item.id} className={index === page ? 'current' : ''} onClick={() => setPage(index)}><span>Page {index + 1}</span>{item.ocrText.trim() ? <p>{item.ocrText}</p> : <p className="empty">No text was detected on this page.</p>}</article>)}</div>}
-        {readingMode === 'single' && !thumbnailsVisible && <button className="show-pages-button" onClick={() => setThumbnailsVisible(true)} aria-label="Show page thumbnails"><Grid2X2 /><span>{page + 1} / {document.pages.length}</span></button>}
+      <section className={`document-canvas mode-${readingMode}`} onClick={(event) => { if (!annotationOpen && readingMode !== 'text' && !(event.target as HTMLElement).closest('.zoom-controls,.show-pages-button,.viewer-scrubber,input,label')) { if (browserMode) revealChrome(); else chromeVisible ? setChromeVisible(false) : revealChrome() } }}>
+        {readingMode === 'single' && current ? <ZoomablePage key={current.id} src={current.imageUrl} alt={`Page ${page + 1}`} rotation={current.rotation} highlights={highlights} annotations={annotationDraft[current.id] ?? []} annotationsVisible={annotationsVisible} annotationMode={annotationMode} annotationColor={annotationColor} annotationWidth={annotationWidth} initialView={readingState.current.single} trimMargins={trimMargins} onAnnotationsChange={strokes => changeAnnotations(current.id, strokes)} onViewChange={saveSingleView} onNavigate={navigatePage} /> : readingMode === 'continuous' || readingMode === 'facing' ? <ContinuousPages pages={document.pages.map(item => ({ ...item, annotations: { version: 1, strokes: annotationDraft[item.id] ?? [] } }))} currentPage={page} initialView={initialQuery || initialPage > 0 ? { ...readingState.current.continuous, scrollTop: 0 } : readingState.current.continuous} trimMargins={trimMargins} facing={readingMode === 'facing'} annotationsVisible={annotationsVisible} onViewChange={saveContinuousView} onPage={setPage} /> : <div className="ocr-reading-view"><header><div><strong>Text view</strong><span>Read and copy recognised text</span></div><button onClick={toggleReadAloud}>{speaking ? <VolumeX /> : <Volume2 />} {speaking ? 'Stop' : 'Read aloud'}</button></header><DocumentText key={document.id} document={document} reading currentPage={page} onPage={setPage} /></div>}
+
+
         {activeMatch?.pageIndex === page && (
           <div className="viewer-match">
             <b>Page {page + 1}</b>
@@ -1680,24 +1688,18 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
         )}
       </section>
       {annotationOpen && current && <aside className="annotation-toolbar" aria-label="Annotation tools">
-        <div className="annotation-mode-label"><Pencil /><span><strong>{annotationMode === 'pan' ? 'Pan and zoom' : 'Drawing'}</strong><small>{annotationNotice || (annotationMode === 'pan' ? 'Choose a tool to continue' : 'Changes save automatically')}</small></span></div>
+        <div className="annotation-mode-label"><PenTool /><span><strong>{annotationMode === 'pan' ? 'Pan and zoom' : 'Drawing'}</strong><small>{annotationNotice || (annotationMode === 'pan' ? 'Choose a tool to continue' : 'Unsaved · tap Done to choose where to save')}</small></span></div>
         <div role="group" aria-label="Drawing tool"><button className={annotationMode === 'pan' ? 'active' : ''} onClick={() => setAnnotationMode('pan')} aria-label="Pan and zoom"><MousePointer2 /></button><button className={annotationMode === 'pen' ? 'active' : ''} onClick={() => setAnnotationMode('pen')} aria-label="Pen"><Pencil /></button><button className={annotationMode === 'highlighter' ? 'active' : ''} onClick={() => setAnnotationMode('highlighter')} aria-label="Highlighter"><Highlighter /></button><button className={annotationMode === 'eraser' ? 'active' : ''} onClick={() => setAnnotationMode('eraser')} aria-label="Stroke eraser"><Eraser /></button></div>
         <label className="annotation-color"><span>Colour</span><input type="color" value={annotationColor} onChange={event => setAnnotationColor(event.target.value)} /></label>
         <label className="annotation-width"><span>Width</span><input type="range" min="0.002" max="0.035" step="0.002" value={annotationWidth} onChange={event => setAnnotationWidth(Number(event.target.value))} /></label>
-        <div role="group" aria-label="Annotation history"><button onClick={undoAnnotation} disabled={!(annotationUndo[current.id]?.length)} aria-label="Undo"><Undo2 /></button><button onClick={redoAnnotation} disabled={!(annotationRedo[current.id]?.length)} aria-label="Redo"><Redo2 /></button><button onClick={() => setAnnotationsVisible(value => !value)} aria-label={annotationsVisible ? 'Hide annotations' : 'Show annotations'}>{annotationsVisible ? <Eye /> : <EyeOff />}</button><button onClick={() => setAnnotationSaveOpen(true)} aria-label="More annotation options"><MoreHorizontal /></button><button className="done" disabled={annotationBusy} onClick={() => void saveAnnotations(false)}><Check /><span>Done</span></button></div>
+        <div role="group" aria-label="Annotation history"><button onClick={undoAnnotation} disabled={!(annotationUndo[current.id]?.length)} aria-label="Undo"><Undo2 /></button><button onClick={redoAnnotation} disabled={!(annotationRedo[current.id]?.length)} aria-label="Redo"><Redo2 /></button><button onClick={() => setAnnotationsVisible(value => !value)} aria-label={annotationsVisible ? 'Hide annotations' : 'Show annotations'}>{annotationsVisible ? <Eye /> : <EyeOff />}</button><button onClick={() => current && changeAnnotations(current.id, [])} disabled={!current || !(annotationDraft[current.id]?.length)} aria-label="Clear page annotations"><Trash2 /></button><button className="done" disabled={annotationBusy} onClick={() => finishAnnotations()}><Check /><span>Done</span></button></div>
       </aside>}
       {!annotationOpen && <aside className="viewer-scrubber" aria-label="Page navigation">
         <button className={bookmarks.includes(page) ? 'active' : ''} onClick={toggleBookmark} aria-label={bookmarks.includes(page) ? 'Remove bookmark' : 'Bookmark this page'}><Bookmark /></button>
-        <button className="viewer-page-button" onClick={() => setThumbnailsVisible(value => !value)} aria-expanded={thumbnailsVisible} aria-label="Show pages"><Grid2X2 /><span>Page {page + 1} of {document.pages.length}</span></button>
+        <button className="viewer-page-button" onClick={() => setThumbnailsVisible(value => !value)} aria-expanded={thumbnailsVisible} aria-label="Go to page"><Grid2X2 /><span>Page {page + 1} of {document.pages.length}</span></button>
       </aside>}
-      <section className={`thumbnail-strip${thumbnailsVisible && readingMode === 'single' ? ' visible' : ''}`} aria-label="Pages" aria-hidden={!thumbnailsVisible || readingMode !== 'single'}>
-        {document.pages.map((item, index) => (
-          <button key={item.id} className={index === page ? 'active' : ''} onClick={() => setPage(index)}>
-            <img src={item.thumbnailUrl || item.imageUrl} alt={`Page ${index + 1}`} />
-            <span>{index + 1}</span>
-          </button>
-        ))}
-      </section>
+      {thumbnailsVisible && !annotationOpen ? <div className="tool-sheet-layer" onClick={() => setThumbnailsVisible(false)}><section className="tool-sheet page-navigator" role="dialog" aria-modal="true" aria-label="Go to page" onClick={event => event.stopPropagation()}><header><strong>Go to page</strong><button onClick={() => setThumbnailsVisible(false)} aria-label="Close pages"><X /></button></header><form onSubmit={event => { event.preventDefault(); const input = new FormData(event.currentTarget).get('page'); goToPage(Number(input) - 1); setThumbnailsVisible(false) }}><label>Page<input name="page" type="number" min="1" max={document.pages.length} defaultValue={page + 1} required /></label><button type="submit">Go</button></form><p>Bookmarks keep a shortcut to pages you want to revisit.</p><div className="page-shortcuts">{bookmarks.map(value => <button key={value} onClick={() => { goToPage(value); setThumbnailsVisible(false) }}><Bookmark size={16} />Page {value + 1}</button>)}</div><div className="page-number-grid">{document.pages.map((item, index) => <button key={item.id} aria-current={index === page ? 'page' : undefined} onClick={() => { goToPage(index); setThumbnailsVisible(false) }}>{index + 1}{bookmarks.includes(index) ? <Bookmark size={12} /> : null}</button>)}</div></section></div> : null}
+
       {viewControlsOpen && (
         <div className="action-sheet-layer" role="presentation" onClick={() => setViewControlsOpen(false)}>
           <section className="viewer-display-sheet" role="dialog" aria-modal="true" aria-labelledby="reading-view-title" onClick={(event) => event.stopPropagation()}>
@@ -1724,7 +1726,8 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
           </section>
         </div>
       )}
-      {annotationSaveOpen && <div className="action-sheet-layer" role="presentation" onClick={() => !annotationBusy && setAnnotationSaveOpen(false)}><section className="annotation-save-sheet" role="dialog" aria-modal="true" aria-label="More annotation options" onClick={event => event.stopPropagation()}><header><div><strong>More options</strong><span>Your current document is saved automatically when you tap Done.</span></div><button disabled={annotationBusy} onClick={() => setAnnotationSaveOpen(false)} aria-label="Close"><X /></button></header>{annotationError && <p className="form-error">{annotationError}</p>}<button disabled={annotationBusy} onClick={() => void saveAnnotations(true)}><Copy /><span><strong>Save annotated copy</strong><small>Keep the original document unchanged</small></span></button>{annotationBusy && <p><span className="button-spinner" /> Preparing copy…</p>}</section></div>}
+      {annotationSaveOpen && <div className="action-sheet-layer" role="presentation"><section className="annotation-save-sheet" role="dialog" aria-modal="true" aria-label="Save annotations"><header><div><strong>Save annotations?</strong><span>Choose where to keep your changes.</span></div><button disabled={annotationBusy} onClick={() => setAnnotationSaveOpen(false)} aria-label="Continue annotating"><X /></button></header>{annotationError ? <p className="form-error" role="alert">{annotationError}</p> : null}<button disabled={annotationBusy} onClick={() => void saveAnnotations(true)}><Copy /><span><strong>Save a copy</strong><small>Keep the original unchanged</small></span></button><button disabled={annotationBusy} onClick={() => void saveAnnotations(false)}><Save /><span><strong>Save to original</strong><small>Update this document with your annotations</small></span></button><button disabled={annotationBusy} onClick={discardAnnotations}><Trash2 /><span><strong>Discard changes</strong><small>Return to the last saved annotations</small></span></button>{annotationBusy ? <p role="status"><span className="button-spinner" /> Saving annotations…</p> : null}</section></div>}
+
       {editing ? <div className="tool-sheet-layer"><section className="tool-sheet rename-sheet" role="dialog" aria-modal="true" aria-labelledby="rename-title">
         <form onSubmit={event => { event.preventDefault(); void saveTitle() }}>
           <h2 id="rename-title">Rename document</h2>
@@ -1765,11 +1768,11 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
                   {exportState === 'success' && <p className="sheet-operation-status"><Check /> Copy saved to Downloads · LOCAL</p>}
                   {exportError && <p className="sheet-error" role="alert">{exportError}</p>}
                   {shareState === 'error' && <p className="sheet-error" role="alert">Could not open sharing. Please try again.</p>}
-                  <button onClick={() => { setTextSelection({ start: 0, end: 0 }); setCopyStatus(''); setActionView('text') }}>
+                  <button onClick={() => { setActionView('text') }}>
                     <FileText />
                     <span>
-                      <strong>Extract text from this page</strong>
-                      <small>Select a passage or copy all text from page {page + 1}</small>
+                      <strong>Extract text</strong>
+                      <small>Copy or export the whole PDF or selected pages</small>
                     </span>
                     <ChevronRight />
                   </button>
@@ -1894,33 +1897,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
             ) : actionView === 'tags' ? (
               <TagEditorSheet initialTags={document.tags} busy={actionBusy} error={actionError} onClose={closeActions} onSave={(tags) => void saveTags(tags)} />
             ) : actionView === 'text' ? (
-              <>
-                <header>
-                  <button onClick={() => setActionView('main')} aria-label="Back"><ArrowLeft /></button>
-                  <div><strong>Text from page {page + 1}</strong><span>Select exactly what you need</span></div>
-                  <button onClick={closeActions} aria-label="Close"><X /></button>
-                </header>
-                <div className="page-text-extractor">
-                  {current?.ocrText.trim() ? (
-                    <>
-                      <p>Press and drag over the text below, then copy the selection—or copy the entire page.</p>
-                      <textarea
-                        readOnly
-                        value={current.ocrText.trim()}
-                        onSelect={(event) => setTextSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}
-                        aria-label={`Text from page ${page + 1}`}
-                      />
-                      <div>
-                        <button disabled={textSelection.end <= textSelection.start} onClick={() => void copyPageText(true)}><Copy /> Copy selection</button>
-                        <button onClick={() => void copyPageText(false)}><FileText /> Copy all</button>
-                      </div>
-                      {copyStatus && <p className="copy-status" role="status">{copyStatus}</p>}
-                    </>
-                  ) : (
-                    <div className="no-page-text"><FileText /><strong>No text was detected on this page</strong><span>Choose “Recognise text again” if the page contains visible text.</span></div>
-                  )}
-                </div>
-              </>
+              <><header><button onClick={() => setActionView('main')} aria-label="Back"><ArrowLeft /></button><div><strong>Extract text</strong><span>Whole PDF or selected pages</span></div><button onClick={closeActions} aria-label="Close"><X /></button></header><DocumentText key={document.id} document={document} initialPages={[page]} /></>
             ) : actionView === 'private' ? (
               <>
                 <header>

@@ -1,7 +1,7 @@
 export type ViewerReadingMode = 'single' | 'continuous' | 'facing' | 'text'
 
 export interface ViewerReadingState {
-  version: 1
+  version: 2
   page: number
   mode: ViewerReadingMode
   single: { scale: number; x: number; y: number }
@@ -14,9 +14,9 @@ export interface ViewerReadingState {
 
 const keyFor = (documentId: string) => `local.viewer.document.${documentId}`
 const defaults = (): ViewerReadingState => ({
-  version: 1,
+  version: 2,
   page: 0,
-  mode: 'single',
+  mode: 'continuous',
   single: { scale: 1, x: 0, y: 0 },
   continuous: { scale: 1, scrollTop: 0, scrollLeft: 0 },
   theme: 'original',
@@ -30,12 +30,13 @@ export const viewerStateService = {
   read(documentId: string): ViewerReadingState {
     const fallback = defaults()
     try {
-      const stored = JSON.parse(localStorage.getItem(keyFor(documentId)) ?? '') as Partial<ViewerReadingState>
-      if (stored.version !== 1) return fallback
+      const stored = JSON.parse(localStorage.getItem(keyFor(documentId)) ?? '') as Partial<Omit<ViewerReadingState, 'version'>> & { version?: number }
+      if (stored.version !== 1 && stored.version !== 2) return fallback
       return {
-        version: 1,
+        version: 2,
         page: Math.max(0, Math.floor(finite(stored.page, 0))),
-        mode: stored.mode === 'continuous' || stored.mode === 'facing' || stored.mode === 'text' ? stored.mode : 'single',
+        // Version 1 wrote the old single-page default even without a user choice.
+        mode: stored.mode === 'single' && stored.version === 2 ? 'single' : stored.mode === 'facing' || stored.mode === 'text' ? stored.mode : 'continuous',
         single: {
           scale: finite(stored.single?.scale, 1),
           x: finite(stored.single?.x, 0),

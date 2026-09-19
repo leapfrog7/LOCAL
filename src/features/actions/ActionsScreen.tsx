@@ -1,3 +1,4 @@
+import { DocumentText } from '../viewer/components/DocumentText'
 import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronRight, Copy, Download, Eraser, Files, FileText, FilePlus2, GripVertical, Lock, Minimize2, PencilLine, Search, SlidersHorizontal, X } from 'lucide-react'
 import type { VaultDocument } from '../../domain/types'
@@ -41,7 +42,8 @@ interface ActionsScreenProps {
   onClean: (document: VaultDocument, indexes: number[], saveMode: ActionSaveMode) => Promise<void>
   onAnalyse: (document: VaultDocument) => Promise<PageCleanupAnalysis>
   onRename: (documents: VaultDocument[], template: string) => Promise<void>
-  onExportText: (document: VaultDocument, format: 'txt' | 'md') => Promise<void>
+  onCopyText: (document: VaultDocument, indexes: number[]) => Promise<void>
+  onExportText: (document: VaultDocument, format: 'txt' | 'md', indexes: number[]) => Promise<void>
 }
 
 const ACTIONS: { id: ActionMode; icon: React.ReactNode; title: string; description: string }[] = [
@@ -52,7 +54,7 @@ const ACTIONS: { id: ActionMode; icon: React.ReactNode; title: string; descripti
   { id: 'insert', icon: <FilePlus2 />, title: 'Insert pages', description: 'Copy pages from one PDF into another' },
   { id: 'clean', icon: <Eraser />, title: 'Clean pages', description: 'Review blank and duplicate page suggestions' },
   { id: 'rename', icon: <PencilLine />, title: 'Batch rename', description: 'Rename several documents from a template' },
-  { id: 'export', icon: <Download />, title: 'Export text', description: 'Share detected text as TXT or Markdown' },
+  { id: 'export', icon: <Download />, title: 'Extract text', description: 'Copy or export all pages or just the pages you choose' },
 ]
 
 export function ActionsScreen(props: ActionsScreenProps) {
@@ -65,7 +67,7 @@ export function ActionsScreen(props: ActionsScreenProps) {
   </>}</>
 }
 
-function ActionWorkspace({ mode, documents, onBack, onCombine, onExtract, onReorder, onCompress, onInsert, onClean, onAnalyse, onRename, onExportText }: ActionsScreenProps & { mode: ActionMode; onBack: () => void }) {
+function ActionWorkspace({ mode, documents, onBack, onCombine, onExtract, onReorder, onCompress, onInsert, onClean, onAnalyse, onRename, onCopyText, onExportText }: ActionsScreenProps & { mode: ActionMode; onBack: () => void }) {
   const [selected, setSelected] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -82,7 +84,7 @@ function ActionWorkspace({ mode, documents, onBack, onCombine, onExtract, onReor
   if (document && mode === 'reorder') return <OperationShell title={title} onBack={() => setSelected([])}><ReorderPagesPanel document={document} busy={busy} error={error} onSave={(indexes, saveMode) => void run(() => onReorder(document, indexes, saveMode))} /></OperationShell>
   if (document && mode === 'compress') return <OperationShell title={title} onBack={() => setSelected([])}><CompressionSheet selected={compression} busy={busy} message={message} error={error} onSelect={setCompression} onClose={() => setSelected([])} onCompress={() => void run(() => onCompress(document, compression))} /></OperationShell>
   if (document && mode === 'clean') return <OperationShell title={title} onBack={() => setSelected([])}><CleanPagesPanel document={document} busy={busy} error={error} onAnalyse={onAnalyse} onSave={(indexes, saveMode) => void run(() => onClean(document, indexes, saveMode))} /></OperationShell>
-  if (document && mode === 'export') return <OperationShell title={title} onBack={() => setSelected([])}><ExportTextPanel document={document} busy={busy} error={error} message={message} onExport={format => void run(() => onExportText(document, format))} /></OperationShell>
+  if (document && mode === 'export') return <OperationShell title={title} onBack={() => setSelected([])}><DocumentText key={document.id} document={document} initialPages={document.pages.map((_, index) => index)} hideText={Boolean(document.isPrivate)} onCopy={indexes => onCopyText(document, indexes)} onExport={(format, indexes) => onExportText(document, format, indexes)} /></OperationShell>
   if (mode === 'insert' && chosen.length === 2) return <OperationShell title={title} onBack={() => setSelected(current => current.slice(0, 1))}><InsertPagesPanel target={chosen[0]} source={chosen[1]} busy={busy} error={error} onSave={(indexes, at, saveMode) => void run(() => onInsert(chosen[0], chosen[1], indexes, at, saveMode))} /></OperationShell>
   return <section className="actions-workspace"><header><button onClick={onBack} aria-label="Back to actions"><ArrowLeft /></button><div><strong>{title}</strong><span>{mode === 'combine' ? 'Choose files in output order' : mode === 'insert' ? selected.length ? 'Step 2 of 3 · Choose the PDF supplying pages' : 'Step 1 of 3 · Choose the PDF receiving pages' : mode === 'rename' ? 'Choose all documents to rename' : 'Choose one document to continue'}</span></div></header>{mode === 'insert' ? <InsertRoleSummary target={chosen[0]} /> : null}<DocumentPicker mode={mode} documents={mode === 'insert' && chosen[0] ? documents.filter(item => item.id !== chosen[0].id) : documents} selected={selected} multi={multi} onToggle={toggle} />{mode === 'combine' && selected.length > 0 ? <div className="selected-document-tray"><strong>Output order</strong>{chosen.map((item, index) => <div key={item.id}><span>{index + 1}</span><b>{item.isPrivate ? 'Private document' : item.title}</b><button disabled={index === 0} onClick={() => moveDocument(item.id, -1)} aria-label="Move earlier"><ArrowUp /></button><button disabled={index === chosen.length - 1} onClick={() => moveDocument(item.id, 1)} aria-label="Move later"><ArrowDown /></button></div>)}</div> : null}{mode === 'rename' && chosen.length ? <RenamePanel documents={chosen} busy={busy} onRename={template => void run(() => onRename(chosen, template))} /> : null}{error ? <p className="sheet-error" role="alert">{error}</p> : null}{mode === 'combine' ? <button className="actions-run-button" disabled={busy || chosen.length < 2} onClick={() => void run(() => onCombine(chosen))}>{busy ? <span className="button-spinner" /> : <Files />} {busy ? 'Combining locally…' : `Combine ${chosen.length || ''} documents`}</button> : null}</section>
 }
@@ -186,11 +188,6 @@ function SaveModeChoice({ value, onChange, targetTitle }: { value: ActionSaveMod
 function RenamePanel({ documents, busy, onRename }: { documents: VaultDocument[]; busy: boolean; onRename: (template: string) => void }) {
   const [template, setTemplate] = useState('{date} - {title}')
   return <div className="phase-four-panel"><label className="phase-four-field">Naming template<input value={template} onChange={event => setTemplate(event.target.value)} placeholder="{date} - {title} - {n}" /></label><small>Tokens: {'{title}'} {'{n}'} {'{date}'} {'{type}'}</small><strong>Preview: {template.replaceAll('{title}', documents[0].isPrivate ? 'Private document' : documents[0].title).replaceAll('{n}', '01').replaceAll('{date}', new Date().toISOString().slice(0, 10)).replaceAll('{type}', documents[0].smartMetadata?.documentType || 'document')}</strong><button className="actions-run-button" disabled={busy || !template.trim()} onClick={() => onRename(template)}><PencilLine /> {busy ? 'Renaming locally…' : `Rename ${documents.length} documents`}</button></div>
-}
-
-function ExportTextPanel({ document, busy, error, message, onExport }: { document: VaultDocument; busy: boolean; error: string; message: string; onExport: (format: 'txt' | 'md') => void }) {
-  const searchable = document.pages.filter(page => page.ocrText.trim()).length
-  return <><header><div><strong>Export recognised text</strong><span>{searchable} of {document.pages.length} pages contain searchable text</span></div></header><p className="phase-four-note">Pages without recognised text are clearly marked in the export. Nothing is uploaded.</p>{message ? <p className="action-result-banner" role="status"><Check /> {message}</p> : null}{error ? <p className="sheet-error" role="alert">{error}</p> : null}<div className="phase-four-export"><button disabled={busy} onClick={() => onExport('txt')}><FileText /><strong>Plain text</strong><span>.txt</span></button><button disabled={busy} onClick={() => onExport('md')}><FileText /><strong>Markdown</strong><span>.md</span></button></div></>
 }
 
 function OperationShell({ title, onBack, children }: { title: string; onBack: () => void; children: React.ReactNode }) {
