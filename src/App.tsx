@@ -699,7 +699,7 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
       {selecting && selectedIds.length > 0 ? <BulkActionBar count={selectedIds.length} busy={bulkBusy} error={bulkError} allPrivate={selectedDocuments.every((document) => document.isPrivate)} onMove={() => setBulkMode('move')} onTag={() => setBulkMode('tag')} onPrivacy={() => void applyBulk('privacy', !selectedDocuments.every((document) => document.isPrivate))} onDelete={() => setDeleteConfirm(true)} onCancel={clearSelection} /> : null}
       {bulkMode ? <BulkOrganizeSheet mode={bulkMode} count={selectedIds.length} busy={bulkBusy} error={bulkError} onClose={() => setBulkMode(null)} onApply={(value) => void applyBulk(bulkMode, value)} /> : null}
       {deleteConfirm ? <ConfirmSheet title={`Move ${selectedIds.length} document${selectedIds.length === 1 ? '' : 's'} to Recently Deleted?`} message="You can restore them for 30 days before they are permanently removed." confirmLabel="Move to Recently Deleted" onConfirm={() => void deleteBulk()} onCancel={() => setDeleteConfirm(false)} /> : null}
-      {pendingImport ? <ConfirmSheet title={`Import “${pendingImport.title}”?`} message={`${pendingImport.pages.length} page${pendingImport.pages.length === 1 ? '' : 's'} will be copied into LOCAL, then searchable text will be prepared in the background.`} confirmLabel="Import PDF" onConfirm={() => void commitImport()} onCancel={() => setPendingImport(null)} /> : null}
+      {pendingImport ? <ImportConfirmationSheet document={pendingImport} onConfirm={() => void commitImport()} onCancel={() => setPendingImport(null)} /> : null}
     </>
   )
 }
@@ -776,6 +776,7 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
   const [folderOptions, setFolderOptions] = useState(['Unfiled'])
   const [cameraOpen, setCameraOpen] = useState(true)
   const [draggingPageId, setDraggingPageId] = useState<string | null>(null)
+  const [exitConfirmationOpen, setExitConfirmationOpen] = useState(false)
   const draggedPageIdRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
@@ -907,6 +908,39 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
   const save = async () => {
     await savePages(pages)
   }
+  const requestClose = useCallback(() => {
+    if (processing || saving) return
+    if (!pages.length) {
+      onClose()
+      return
+    }
+    setExitConfirmationOpen(true)
+  }, [onClose, pages.length, processing, saving])
+  const saveBeforeClose = async () => {
+    const saved = await savePages(pages)
+    if (!saved) setExitConfirmationOpen(false)
+  }
+  useEffect(() => {
+    const back = (raw: Event) => {
+      const event = raw as CustomEvent
+      if (exitConfirmationOpen) setExitConfirmationOpen(false)
+      else if (editingPageId) setEditingPageId(null)
+      else if (cameraOpen && pages.length) setCameraOpen(false)
+      else requestClose()
+      event.preventDefault()
+    }
+    window.addEventListener('local:back', back)
+    return () => window.removeEventListener('local:back', back)
+  }, [cameraOpen, editingPageId, exitConfirmationOpen, pages.length, requestClose])
+  useEffect(() => {
+    if (!pages.length) return
+    const protectDraft = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', protectDraft)
+    return () => window.removeEventListener('beforeunload', protectDraft)
+  }, [pages.length])
   const editingPage = pages.find((page) => page.id === editingPageId)
   const selectedPage = pages.find((page) => page.id === selectedPageId) ?? pages[0]
   const selectedIndex = selectedPage ? pages.indexOf(selectedPage) : -1
@@ -1000,7 +1034,7 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
   return (
     <div className="full-screen capture-review-screen">
       <header className="top-bar">
-        <button onClick={onClose} aria-label="Cancel">
+        <button onClick={requestClose} aria-label="Close scan">
           <X />
         </button>
         <div>
@@ -1114,6 +1148,7 @@ function CaptureScreen({ onClose, onSave }: { onClose: () => void; onSave: (doc:
         </>
       )}
       <input ref={inputRef} className="hidden-input" type="file" accept="image/*" multiple onChange={(event) => void addFiles(event.target.files)} />
+      {exitConfirmationOpen ? <ScanExitSheet pageCount={pages.length} busy={saving} onKeepEditing={() => setExitConfirmationOpen(false)} onDiscard={onClose} onSave={() => void saveBeforeClose()} /> : null}
     </div>
   )
 }
@@ -2653,6 +2688,40 @@ function ConfirmSheet({ title, message, confirmLabel, onConfirm, onCancel }: { t
             {confirmLabel}
           </button>
         </div>
+      </section>
+    </div>
+  )
+}
+
+function ImportConfirmationSheet({ document, onConfirm, onCancel }: { document: VaultDocument; onConfirm: () => void; onCancel: () => void }) {
+  const pageCount = document.pages.length
+  return (
+    <div className="tool-sheet-layer" role="presentation" onClick={onCancel}>
+      <section className="tool-sheet import-confirmation-sheet" role="dialog" aria-modal="true" aria-labelledby="import-confirm-title" aria-describedby="import-confirm-message" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <span className="import-confirmation-icon"><FileUp /></span>
+          <span><small>READY TO ADD</small><strong id="import-confirm-title">{document.title}</strong></span>
+          <button onClick={onCancel} aria-label="Close import confirmation"><X /></button>
+        </header>
+        <div className="import-confirmation-summary">
+          <div><strong>{pageCount}</strong><span>{pageCount === 1 ? 'page' : 'pages'}</span></div>
+          <p id="import-confirm-message">A copy will be saved in LOCAL's private app storage. Searchable text will be prepared on your device after saving.</p>
+        </div>
+        <div className="import-confirmation-note"><ShieldCheck /><span><strong>Original PDF stays unchanged</strong><small>You can review the imported document before sharing or arranging pages.</small></span></div>
+        <div className="sheet-decision-actions"><button onClick={onCancel}>Not now</button><button className="primary" onClick={onConfirm}><FileUp /> Import document</button></div>
+      </section>
+    </div>
+  )
+}
+
+function ScanExitSheet({ pageCount, busy, onKeepEditing, onDiscard, onSave }: { pageCount: number; busy: boolean; onKeepEditing: () => void; onDiscard: () => void; onSave: () => void }) {
+  return (
+    <div className="tool-sheet-layer" role="presentation" onClick={onKeepEditing}>
+      <section className="tool-sheet scan-exit-sheet" role="alertdialog" aria-modal="true" aria-labelledby="scan-exit-title" aria-describedby="scan-exit-message" onClick={(event) => event.stopPropagation()}>
+        <header><span className="scan-exit-icon"><Save /></span><span><small>UNSAVED SCAN</small><strong id="scan-exit-title">Save before leaving?</strong></span><button disabled={busy} onClick={onKeepEditing} aria-label="Keep editing"><X /></button></header>
+        <p id="scan-exit-message">Your {pageCount} captured {pageCount === 1 ? 'page is' : 'pages are'} not saved yet. Save the document now or discard the scan.</p>
+        <button className="scan-save-choice" disabled={busy} onClick={onSave}>{busy ? <span className="button-spinner" /> : <Save />}<span><strong>{busy ? 'Saving securely…' : 'Save document'}</strong><small>Keep all {pageCount} {pageCount === 1 ? 'page' : 'pages'} in Home</small></span><ChevronRight /></button>
+        <div className="sheet-decision-actions"><button disabled={busy} onClick={onKeepEditing}>Keep editing</button><button className="danger" disabled={busy} onClick={onDiscard}><Trash2 /> Discard scan</button></div>
       </section>
     </div>
   )

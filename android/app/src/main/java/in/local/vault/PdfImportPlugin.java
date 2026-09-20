@@ -2,7 +2,6 @@ package in.local.vault;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.ProgressDialog;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -49,7 +48,6 @@ public class PdfImportPlugin extends Plugin {
     private volatile boolean importing;
     private File activeDirectory;
     private String activeTitle;
-    private ProgressDialog progress;
     private AlertDialog passwordDialog;
 
     @Override public void load() {
@@ -91,7 +89,6 @@ public class PdfImportPlugin extends Plugin {
         // Activity result callbacks run on the main thread. PDFBox parsing and page
         // rendering can be expensive (especially for unusual embedded image formats),
         // so never perform the import inline with the WebView/UI lifecycle.
-        showProgress("Opening PDF…");
         importExecutor.execute(() -> preparePdf(call, source));
     }
 
@@ -117,7 +114,6 @@ public class PdfImportPlugin extends Plugin {
 
     private void askPassword(PluginCall call, boolean incorrect) {
         getActivity().runOnUiThread(() -> {
-            dismissProgress();
             if (cancelled || getActivity().isFinishing()) { cancelImport(call); return; }
             LinearLayout fields = new LinearLayout(getContext()); fields.setOrientation(LinearLayout.VERTICAL);
             int pad = (int) (24 * getContext().getResources().getDisplayMetrics().density); fields.setPadding(pad, 0, pad, 0);
@@ -134,7 +130,7 @@ public class PdfImportPlugin extends Plugin {
                 String value = password.getText().toString();
                 if (value.isEmpty()) { password.setError("Enter the PDF password."); return; }
                 boolean save = saveCopy.isChecked(); password.setText(""); passwordDialog.dismiss();
-                showProgress("Unlocking PDF…"); importExecutor.execute(() -> unlock(call, value, save));
+                importExecutor.execute(() -> unlock(call, value, save));
             }));
             passwordDialog.show();
             passwordDialog.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
@@ -150,7 +146,6 @@ public class PdfImportPlugin extends Plugin {
             if (cancelled) { cancelImport(call); return; }
             if (saveCopy) {
                 getActivity().runOnUiThread(() -> {
-                    dismissProgress();
                     Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                     intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("application/pdf");
                     intent.putExtra(Intent.EXTRA_TITLE, activeTitle + " - unlocked.pdf");
@@ -165,7 +160,6 @@ public class PdfImportPlugin extends Plugin {
 
     @ActivityCallback private void savedUnlocked(PluginCall call, ActivityResult result) {
         if (call == null) return;
-        showProgress("Preparing PDF pages…");
         importExecutor.execute(() -> {
             Uri target = result.getData() == null ? null : result.getData().getData();
             try {
@@ -195,7 +189,6 @@ public class PdfImportPlugin extends Plugin {
                 if (renderer.getPageCount() > MAX_PAGES) throw new IllegalArgumentException("PDF import supports up to " + MAX_PAGES + " pages at a time.");
                 for (int index = 0; index < renderer.getPageCount(); index += 1) {
                     if (cancelled) { cancelImport(call); return; }
-                    showProgress("Preparing page " + (index + 1) + " of " + renderer.getPageCount());
                     try (PdfRenderer.Page pdfPage = renderer.openPage(index)) {
                         float scale = Math.min(IMPORT_SCALE, Math.min(
                             (float) MAX_RENDER_DIMENSION / pdfPage.getWidth(),
@@ -233,18 +226,11 @@ public class PdfImportPlugin extends Plugin {
             new File(directory, "source.pdf").delete();
             new File(directory, "unlocked.pdf").delete();
             activeDirectory = null;
-            getActivity().runOnUiThread(this::dismissProgress);
             call.resolve(response);
         } catch (Exception error) { fail(call, error); }
         catch (OutOfMemoryError error) { fail(call, new IllegalStateException("This PDF is too large to render on this device. Try fewer pages.")); }
     }
 
-    private void showProgress(String message) { getActivity().runOnUiThread(() -> {
-        if (getActivity().isFinishing() || cancelled) return;
-        if (progress == null) { progress = new ProgressDialog(getActivity()); progress.setTitle("Opening PDF"); progress.setIndeterminate(true); progress.setCancelable(true); progress.setOnCancelListener(dialog -> cancelled = true); }
-        progress.setMessage(message); progress.show();
-    }); }
-    private void dismissProgress() { if (progress != null) { progress.dismiss(); progress = null; } }
     private void cancelImport(PluginCall call) {
         cancelled = true;
         if (importExecutor.isShutdown()) return;
@@ -257,7 +243,7 @@ public class PdfImportPlugin extends Plugin {
         if (cancelled) { JSObject result = new JSObject(); result.put("cancelled", true); result.put("pages", new JSArray()); call.resolve(result); }
         else call.reject(error instanceof IllegalArgumentException || error instanceof IllegalStateException ? error.getMessage() : "LOCAL could not open this PDF. It may be damaged or use unsupported encryption.", error);
     }
-    private void cleanupActive() { deleteTree(activeDirectory); activeDirectory = null; importing = false; getActivity().runOnUiThread(this::dismissProgress); }
+    private void cleanupActive() { deleteTree(activeDirectory); activeDirectory = null; importing = false; }
     private static void deleteTree(File directory) { if (directory == null) return; File[] files = directory.listFiles(); if (files != null) for (File file : files) deleteTree(file); directory.delete(); }
     @PluginMethod public void release(PluginCall call) {
         String token = call.getString("token", "");
@@ -269,7 +255,6 @@ public class PdfImportPlugin extends Plugin {
     protected void handleOnDestroy() {
         cancelled = true;
         if (passwordDialog != null) passwordDialog.dismiss();
-        dismissProgress();
         importExecutor.execute(this::cleanupActive);
         importExecutor.shutdown();
         super.handleOnDestroy();
