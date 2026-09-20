@@ -4,30 +4,105 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#173f31">
-  <meta name="description" content="Download LOCAL, a private on-device Android document scanner with local OCR and PDF tools.">
-  <title>LOCAL — Private Android document scanner</title>
+  <meta name="description" content="Download LOCAL 1.0.8, an open-source Android document scanner with on-device OCR, local search, PDF page tools and encrypted backups.">
+  <meta property="og:title" content="LOCAL — Your documents, searchable on your Android device">
+  <meta property="og:description" content="Scan, search, read and organise documents without an account or cloud OCR service.">
+  <meta property="og:type" content="website">
+  <title>LOCAL — Private Android document scanner and search</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main>
-    <nav><a class="wordmark" href="./" aria-label="LOCAL home"><span>L</span> LOCAL</a><a href="https://github.com/leapfrog7/LOCAL">View source</a></nav>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header">
+    <nav aria-label="Main navigation">
+      <a class="wordmark" href="./" aria-label="LOCAL home"><span aria-hidden="true">L</span><strong>LOCAL</strong></a>
+      <div class="nav-links"><a href="#features">Features</a><a href="#privacy">Privacy</a><a href="https://github.com/leapfrog7/LOCAL">Source code</a></div>
+    </nav>
+  </header>
+
+  <main id="content">
     <section class="hero">
-      <div class="eyebrow">Local OCR · No account · No document uploads</div>
-      <h1>Your papers, searchable.<br><em>Still yours.</em></h1>
-      <p>Scan, organise, search and edit PDFs on your Android device. LOCAL keeps document images, OCR text and search indexes in private app storage.</p>
-      <div class="actions">
-        <a class="download" href="https://github.com/leapfrog7/LOCAL/releases/latest/download/LOCAL-latest.apk">Download latest APK <small>Android 6.0 and newer</small></a>
-        <a class="quiet" href="https://github.com/leapfrog7/LOCAL/releases/latest">Release details & checksums</a>
+      <div class="hero-copy">
+        <div class="eyebrow"><span></span> Android document scanner · On-device OCR</div>
+        <h1>Find the paper<br><em>you remember.</em></h1>
+        <p class="hero-lead">Scan paper or import a PDF, then search the recognised text on your device. LOCAL works without an account, advertising or a cloud document library.</p>
+        <div class="actions">
+          <a class="download" href="https://github.com/leapfrog7/LOCAL/releases/download/v1.0.8/LOCAL-1.0.8.apk"><span>Download LOCAL 1.0.8</span><small>Signed APK · Android 6.0+ · 108 MB</small></a>
+          <a class="quiet" href="#install">How to install safely <span aria-hidden="true">→</span></a>
+        </div>
+        <ul class="trust-list" aria-label="Release details">
+          <li><strong>No account</strong><span>Start using it immediately</span></li>
+          <li><strong>Open source</strong><span>Inspect how it works</span></li>
+          <li><strong>Signed release</strong><span>Consistent update identity</span></li>
+        </ul>
       </div>
-      <p class="install-note"><strong>Installing from GitHub:</strong> Android may ask you to allow installs from your browser or file manager. The APK is signed; verify its SHA-256 value against the release before installing.</p>
+
+      <div class="phone-wrap" aria-label="Illustration of the LOCAL Home screen">
+        <div class="phone" aria-hidden="true">
+          <div class="phone-top"><span class="mini-logo">L</span><div><b>LOCAL</b><small>On-device document workspace</small></div><i>Private</i></div>
+          <div class="phone-title"><b>Your documents,<br>close at hand.</b><span>Scan paper or import a PDF.</span></div>
+          <div class="phone-actions"><div class="scan"><b>⌗</b><span>Scan</span></div><div class="import"><b>⇧</b><span>Import PDF</span></div><div class="tools"><b>☷</b><span>Tools</span></div></div>
+          <div class="phone-search"><span>⌕</span><p>Search documents</p><b>☷</b></div>
+          <div class="phone-recent"><b>Recent documents</b><small>Last 3 weeks</small></div>
+          <div class="phone-document"><span>PDF</span><div><b>House insurance</b><small>12 pages · Searchable</small></div><i>›</i></div>
+          <div class="phone-document"><span>PDF</span><div><b>Medical receipts</b><small>4 pages · Searchable</small></div><i>›</i></div>
+        </div>
+      </div>
     </section>
+
+    <section class="confidence" aria-label="LOCAL at a glance">
+      <div><strong>1.0.8</strong><span>Current release</span></div>
+      <div><strong>Android 6+</strong><span>Minimum version</span></div>
+      <div><strong>English + Devanagari</strong><span>On-device text recognition</span></div>
+      <div><strong>Zero analytics</strong><span>No usage tracking in the app</span></div>
+    </section>
+
+    <section class="section-intro" id="features">
+      <span class="section-label">WHAT IT HELPS YOU DO</span>
+      <h2>From a paper page to something you can find and reuse.</h2>
+      <p>LOCAL focuses on everyday document work. It keeps the original capture, prepares searchable text and gives you page-level tools without requiring an online account.</p>
+    </section>
+
     <section class="features" aria-label="LOCAL features">
-      <article><b>01</b><h2>Scan and find</h2><p>High-quality multi-page capture, offline English and Hindi text recognition, barcodes, smart titles and full-text lookup.</p></article>
-      <article><b>02</b><h2>Read and annotate</h2><p>Flexible page views, bookmarks, selectable text, read-aloud, pen and highlighter tools, all stored locally.</p></article>
-      <article><b>03</b><h2>Protect sensitive files</h2><p>SQLCipher metadata storage, Android Keystore encryption for private documents, app lock and encrypted backups.</p></article>
+      <article><span>01</span><div class="feature-icon green">⌗</div><h3>Scan and import</h3><p>Capture multi-page paper documents, adjust page edges, improve readability, or import an existing PDF—including password-protected files.</p></article>
+      <article><span>02</span><div class="feature-icon blue">⌕</div><h3>Search recognised text</h3><p>On-device OCR makes printed text searchable. Jump to matching pages, then organise documents with folders and tags.</p></article>
+      <article><span>03</span><div class="feature-icon violet">Aa</div><h3>Read and reuse text</h3><p>Use continuous page scrolling, bookmarks and text view. Select several pages and copy or export their recognised text together.</p></article>
+      <article><span>04</span><div class="feature-icon amber">✎</div><h3>Annotate pages</h3><p>Add pen and highlighter marks with undo and erasing. Choose whether to save a copy or update the document.</p></article>
+      <article><span>05</span><div class="feature-icon violet">⇄</div><h3>Prepare PDF copies</h3><p>Combine documents, extract or reorder pages, insert pages, review cleanup suggestions and compress PDFs for sharing.</p></article>
+      <article><span>06</span><div class="feature-icon green">◇</div><h3>Protect and recover</h3><p>Use app lock, private documents, PDF export passwords and passphrase-encrypted backups for different protection needs.</p></article>
     </section>
-    <section class="privacy"><div><span>PRIVATE BY DESIGN</span><h2>No cloud document pipeline hiding behind the interface.</h2></div><p>LOCAL has no analytics, advertising, account system, remote OCR or cloud synchronization. Google Play services may download ML Kit components; document processing stays on the device. Files leave LOCAL only when you explicitly export, share or back them up.</p></section>
+
+    <section class="privacy" id="privacy">
+      <div class="privacy-copy"><span class="section-label">PRIVATE BY DESIGN</span><h2>Your library is not a cloud account.</h2><p>Document images, recognised text, metadata and search indexes are stored in LOCAL's private app storage. OCR and document search run on the device.</p><a href="privacy.html">Read the privacy policy <span aria-hidden="true">→</span></a></div>
+      <div class="privacy-points">
+        <article><b>01</b><div><strong>No analytics or advertising</strong><p>LOCAL does not include usage tracking, ad software or an account system.</p></div></article>
+        <article><b>02</b><div><strong>You initiate anything leaving the app</strong><p>A document leaves LOCAL when you choose to export, share or save a backup. Android components required for on-device recognition may be downloaded separately.</p></div></article>
+        <article><b>03</b><div><strong>Private and password-protected mean different things</strong><p>Private documents require authentication inside LOCAL. A PDF password protects a PDF copy outside LOCAL.</p></div></article>
+      </div>
+    </section>
+
+    <section class="install" id="install">
+      <div><span class="section-label">INSTALL WITH CONFIDENCE</span><h2>A signed Android release, directly from GitHub.</h2><p>LOCAL is currently distributed as an APK rather than through Google Play. Android may ask you to allow installation from the browser or file manager you use.</p></div>
+      <ol>
+        <li><span>1</span><div><strong>Download the current APK</strong><p>Use the release link below. Avoid APK copies from other websites.</p></div></li>
+        <li><span>2</span><div><strong>Allow this installation when Android asks</strong><p>The wording varies by Android version. You can remove that permission again after installation.</p></div></li>
+        <li><span>3</span><div><strong>Verify when assurance matters</strong><p>The GitHub release records the APK's SHA-256 digest. Version 1.0.8 is <code>b6e7564c…afa3f5</code>.</p></div></li>
+      </ol>
+      <div class="install-actions"><a class="download" href="https://github.com/leapfrog7/LOCAL/releases/download/v1.0.8/LOCAL-1.0.8.apk"><span>Download signed APK</span><small>LOCAL 1.0.8</small></a><a class="quiet" href="https://github.com/leapfrog7/LOCAL/releases/tag/v1.0.8">Release notes and full digest</a></div>
+    </section>
+
+    <section class="expectations">
+      <div><span class="section-label">GOOD TO KNOW</span><h2>Clear expectations make a trustworthy tool.</h2></div>
+      <div class="expectation-grid">
+        <article><strong>Backups are your responsibility</strong><p>LOCAL does not automatically sync your library. Create an encrypted backup and keep its passphrase separately.</p></article>
+        <article><strong>OCR is an aid, not the original</strong><p>Faint print, handwriting and complex layouts can be recognised incorrectly. Check important text against the page image.</p></article>
+        <article><strong>PDF tools work with pages</strong><p>LOCAL can arrange, annotate, extract and regenerate PDFs. It does not edit existing PDF text or preserve every interactive form, link or digital signature in regenerated copies.</p></article>
+      </div>
+    </section>
+
+    <section class="final-cta"><span>Ready to make paper searchable?</span><h2>Keep the document. Lose the hunt.</h2><div><a class="download" href="https://github.com/leapfrog7/LOCAL/releases/download/v1.0.8/LOCAL-1.0.8.apk"><span>Download LOCAL 1.0.8</span><small>Signed APK for Android 6.0+</small></a><a class="quiet" href="https://github.com/leapfrog7/LOCAL">Explore the source</a></div></section>
   </main>
-  <footer><span>LOCAL 1.0.3</span><a href="privacy.html">Privacy policy</a><a href="https://github.com/leapfrog7/LOCAL/issues">Support</a><a href="https://github.com/leapfrog7/LOCAL/releases">All releases</a></footer>
+
+  <footer><a class="footer-brand" href="./"><strong>LOCAL</strong><span>Local OCR, Capture, Archive &amp; Lookup</span></a><div><a href="privacy.html">Privacy policy</a><a href="https://github.com/leapfrog7/LOCAL/issues">Support</a><a href="https://github.com/leapfrog7/LOCAL/releases">All releases</a></div><small>Version 1.0.8 · Open-source Android app</small></footer>
 </body>
 </html>
