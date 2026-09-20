@@ -302,7 +302,8 @@ export const backupService = {
           pdfGeneratedAt: undefined,
           pages: source.pages.map((page) => ({
             ...page,
-            id: copy ? crypto.randomUUID() : page.id,
+            // Backup IDs are untrusted and may belong to another local document.
+            id: crypto.randomUUID(),
             imagePath: undefined,
             originalImagePath: undefined,
             thumbnailPath: undefined,

@@ -6,6 +6,11 @@ const document = () => ({ id: 'doc', title: 'हिन्दी 🔒', folder: '
 const payload = () => ({ format: 'local-backup-v2' as const, createdAt: '2026-09-19', documents: [document()] })
 
 describe('backup input and streaming serialization', () => {
+  it('rejects shared page IDs across different documents', () => {
+    const value = payload()
+    value.documents.push({ ...document(), id: 'another-document' })
+    expect(() => validateBackupPayload(value)).toThrow('Invalid backup')
+  })
   it('rejects traversal IDs before storage can be modified', () => {
     const value = payload(); value.documents[0].id = '../other-document'
     expect(() => validateBackupPayload(value)).toThrow('Invalid backup')

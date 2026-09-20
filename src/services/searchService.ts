@@ -128,7 +128,7 @@ export const searchService = {
     const advanced = parseAdvancedQuery(query)
     const documents = await documentsRepository.search(advanced.text)
     const terms = normalise(advanced.text).toLocaleLowerCase().split(' ').filter(Boolean)
-    return documents.filter(document => matchesSmartFilter(document, filter) && matchesAdvancedQuery(document, advanced)).map(document => {
+    return documents.filter(document => (!document.isPrivate || (!query.trim() && filter === 'all')) && matchesSmartFilter(document, filter) && matchesAdvancedQuery(document, advanced)).map(document => {
       const matches = pageMatches(document, advanced.text)
       return { document, pageMatches: matches, score: resultScore(document, advanced.text, matches) }
     }).filter(result => {

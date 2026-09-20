@@ -1,3 +1,4 @@
+import { DiscoverScreen } from './features/discover/DiscoverScreen'
 import { DocumentText } from './features/viewer/components/DocumentText'
 import { copyDocumentText } from './services/textSelection'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -190,10 +191,25 @@ function App() {
       removeNativeListener()
     }
   }, [updateDocument])
+  const [savedNoticeId, setSavedNoticeId] = useState<string | null>(null)
+  const [undoIds, setUndoIds] = useState<string[]>([])
+  const [undoBusy, setUndoBusy] = useState(false)
+  const [undoError, setUndoError] = useState('')
+  const undoDelete = async () => {
+    setUndoBusy(true); setUndoError('')
+    try {
+      for (const id of undoIds) {
+        const item = await documentsRepository.get(id)
+        if (item?.deletedAt) await documentsRepository.save({ ...item, deletedAt: undefined, updatedAt: new Date().toISOString() })
+      }
+      await refresh(); setUndoIds([])
+    } catch { setUndoError('Could not restore every document. Try again or open Recently Deleted.') }
+    finally { setUndoBusy(false) }
+  }
   const open = (next: Screen) => {
     setScreen(next)
     if (next.name === 'home') void refresh()
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+    window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
   }
   useEffect(() => {
     let remove = () => undefined
@@ -371,6 +387,7 @@ function App() {
           })
         })
     )
+    setUndoIds(ids); setUndoError('')
     const deleted = new Set(ids)
     setDocuments((current) => current.filter((document) => !deleted.has(document.id)))
     setSearchResults((current) => current.filter((result) => !deleted.has(result.document.id)))
@@ -412,13 +429,7 @@ function App() {
           updateDocument(visible)
         }}
         onDelete={async () => {
-          const deletedAt = new Date().toISOString()
-          await cancelProcessing(document.id, () => undefined).catch(() => undefined)
-          await documentsRepository.save({
-            ...document,
-            deletedAt,
-            updatedAt: deletedAt
-          })
+          await bulkDeleteDocuments([document.id])
           await refresh()
           open({ name: 'home' })
         }}
@@ -435,10 +446,12 @@ function App() {
       {!nativePlatform ? <DesktopSidebar active={screen.name} documentCount={documents.length} onOpen={name => open({ name })} /> : null}
       <main className="content">
         {screen.name === 'home' && searchError ? <p className="sheet-error" role="alert">{searchError} <button onClick={() => void refresh()}>Retry search</button></p> : null}
-        {screen.name === 'home' && <Library documents={searchResults.map((result) => result.document)} allDocuments={documents} searchResults={searchResults} query={query} setQuery={setQuery} searchFilter={searchFilter} setSearchFilter={setSearchFilter} loading={loading || completedSearch !== searchKey} browserMode={!nativePlatform} onScan={() => open({ name: 'capture' })} onTools={() => open({ name: 'actions' })} onPrepareImport={preparePdfImport} onCommitImport={saveNewDocument} onBulkUpdate={bulkUpdateDocuments} onBulkDelete={bulkDeleteDocuments} onOpen={(id, page) => void openDocument(id, page, parseAdvancedQuery(query).text)} />}
+        {screen.name === 'home' && undoIds.length > 0 ? <section className="completion-note" role="status"><Undo2 /><div><strong>Moved to Recently Deleted</strong><p>{undoError || 'You can restore these documents for 30 days.'}</p><button disabled={undoBusy} onClick={() => void undoDelete()}>{undoBusy ? 'Restoring?' : 'Undo'}</button></div><button aria-label="Dismiss deletion message" disabled={undoBusy} onClick={() => setUndoIds([])}><X size={18} /></button></section> : null}
+        {screen.name === 'home' && <Library documents={searchResults.map((result) => result.document)} allDocuments={documents} searchResults={searchResults} query={query} setQuery={setQuery} searchFilter={searchFilter} setSearchFilter={setSearchFilter} loading={loading || completedSearch !== searchKey} browserMode={!nativePlatform} onScan={() => open({ name: 'capture' })} onTools={() => open({ name: 'actions' })} onDiscover={() => open({ name: 'discover', from: 'home' })} savedNotice={documents.find(item => item.id === savedNoticeId)} onDismissNotice={() => setSavedNoticeId(null)} onPrepareImport={preparePdfImport} onCommitImport={saveNewDocument} onBulkUpdate={bulkUpdateDocuments} onBulkDelete={bulkDeleteDocuments} onOpen={(id, page) => void openDocument(id, page, parseAdvancedQuery(query).text)} />}
+        {screen.name === 'discover' && <DiscoverScreen onBack={() => open({ name: screen.from })} onNavigate={name => open({ name })} />}
         {screen.name === 'folders' && <Folders documents={documents} onOpen={(id) => void openDocument(id)} onChange={refresh} />}
         {screen.name === 'actions' && <ActionsScreen documents={documents} onCombine={combineSelectedDocuments} onExtract={extractFromActions} onReorder={reorderFromActions} onCompress={compressFromActions} onInsert={insertFromActions} onClean={cleanFromActions} onAnalyse={analyseFromActions} onRename={renameFromActions} onCopyText={copyTextFromActions} onExportText={exportTextFromActions} />}
-        {screen.name === 'settings' && <SettingsScreen documents={documents} onChanged={refresh} onOpenTrash={() => open({ name: 'trash' })} />}
+        {screen.name === 'settings' && <SettingsScreen documents={documents} onChanged={refresh} onOpenTrash={() => open({ name: 'trash' })} onDiscover={() => open({ name: 'discover', from: 'settings' })} />}
         {screen.name === 'trash' && <TrashScreen onBack={() => open({ name: 'settings' })} onChanged={refresh} />}
       </main>
     <nav className="bottom-nav" aria-label="Main navigation">
@@ -467,8 +480,7 @@ const SEARCH_FILTERS: { id: SmartSearchFilter; label: string }[] = [
   { id: 'statements', label: 'Statements' },
   { id: 'needs_attention', label: 'Needs attention' }
 ]
-const QUICK_SEARCH_FILTER_IDS = new Set<SmartSearchFilter>(['all', 'receipts', 'needs_attention'])
-function Library({ documents, allDocuments, searchResults, query, setQuery, searchFilter, setSearchFilter, loading, browserMode, onScan, onTools, onPrepareImport, onCommitImport, onBulkUpdate, onBulkDelete, onOpen }: { documents: VaultDocument[]; allDocuments: VaultDocument[]; searchResults: DocumentSearchResult[]; query: string; setQuery: (value: string) => void; searchFilter: SmartSearchFilter; setSearchFilter: (value: SmartSearchFilter) => void; loading: boolean; browserMode: boolean; onScan: () => void; onTools: () => void; onPrepareImport: (onStage: (stage: string) => void) => Promise<VaultDocument | null>; onCommitImport: (document: VaultDocument) => Promise<void>; onBulkUpdate: (ids: string[], action: { type: 'move' | 'tag' | 'privacy'; value: string | boolean }) => Promise<void>; onBulkDelete: (ids: string[]) => Promise<void>; onOpen: (id: string, page?: number) => void }) {
+function Library({ documents, allDocuments, searchResults, query, setQuery, searchFilter, setSearchFilter, loading, browserMode, onScan, onTools, onDiscover, savedNotice, onDismissNotice, onPrepareImport, onCommitImport, onBulkUpdate, onBulkDelete, onOpen }: { documents: VaultDocument[]; allDocuments: VaultDocument[]; searchResults: DocumentSearchResult[]; query: string; setQuery: (value: string) => void; searchFilter: SmartSearchFilter; setSearchFilter: (value: SmartSearchFilter) => void; loading: boolean; browserMode: boolean; onScan: () => void; onTools: () => void; onDiscover: () => void; savedNotice?: VaultDocument; onDismissNotice: () => void; onPrepareImport: (onStage: (stage: string) => void) => Promise<VaultDocument | null>; onCommitImport: (document: VaultDocument) => Promise<void>; onBulkUpdate: (ids: string[], action: { type: 'move' | 'tag' | 'privacy'; value: string | boolean }) => Promise<void>; onBulkDelete: (ids: string[]) => Promise<void>; onOpen: (id: string, page?: number) => void }) {
   const resultsById = useMemo(() => new Map(searchResults.map((result) => [result.document.id, result])), [searchResults])
   const highlightQuery = useMemo(() => parseAdvancedQuery(query).text, [query])
   const [importing, setImporting] = useState(false),
@@ -481,24 +493,27 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
   const [bulkBusy, setBulkBusy] = useState(false),
     [bulkError, setBulkError] = useState(''),
     [searchHelp, setSearchHelp] = useState(false)
+  const [searchOptionsOpen, setSearchOptionsOpen] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => localStorage.getItem('local.library.view') === 'grid' ? 'grid' : 'list')
   const [sortOrder, setSortOrder] = useState<'recent' | 'oldest' | 'title' | 'pages'>('recent')
   const [filtersOpen, setFiltersOpen] = useState(false)
-  const [recentOnly, setRecentOnly] = useState(!browserMode)
+  const [recentOnly, setRecentOnly] = useState(true)
   const [folderFilter, setFolderFilter] = useState('All folders'), [tagFilter, setTagFilter] = useState('All tags'), [privacyFilter, setPrivacyFilter] = useState<'all' | 'public' | 'private'>('all')
   const [recentSearches, setRecentSearches] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('local.library.recent-searches') ?? '[]') as string[] } catch { return [] } })
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const selectedDocuments = useMemo(() => documents.filter((document) => selectedIdSet.has(document.id)), [documents, selectedIdSet])
   const processingDocuments = useMemo(() => allDocuments.filter((document) => document.status !== 'indexed').slice(0, 4), [allDocuments])
   const folders = useMemo(() => ['All folders', ...new Set(allDocuments.map(document => document.folder))], [allDocuments])
-  const tags = useMemo(() => ['All tags', ...new Set(allDocuments.flatMap(document => document.tags))], [allDocuments])
-  const displayDocuments = useMemo(() => documents.filter(document => (!recentOnly || Boolean(query.trim()) || searchFilter !== 'all' || Date.parse(document.createdAt) >= Date.now() - 21 * 86400000) && (folderFilter === 'All folders' || document.folder === folderFilter) && (tagFilter === 'All tags' || document.tags.includes(tagFilter)) && (privacyFilter === 'all' || Boolean(document.isPrivate) === (privacyFilter === 'private'))).sort((a, b) => query.trim() ? (resultsById.get(b.id)?.score ?? 0) - (resultsById.get(a.id)?.score ?? 0) : sortOrder === 'title' ? a.title.localeCompare(b.title) : sortOrder === 'pages' ? b.pages.length - a.pages.length : sortOrder === 'oldest' ? a.createdAt.localeCompare(b.createdAt) : b.createdAt.localeCompare(a.createdAt)), [documents, folderFilter, tagFilter, privacyFilter, sortOrder, recentOnly, query, searchFilter, resultsById])
+  const tags = useMemo(() => ['All tags', ...new Set(allDocuments.filter(document => !document.isPrivate).flatMap(document => document.tags))], [allDocuments])
+  const displayDocuments = useMemo(() => documents.filter(document => (!recentOnly || Boolean(query.trim()) || searchFilter !== 'all' || Date.parse(document.createdAt) >= Date.now() - 21 * 86400000) && (folderFilter === 'All folders' || document.folder === folderFilter) && (tagFilter === 'All tags' || (!document.isPrivate && document.tags.includes(tagFilter))) && (privacyFilter === 'all' || Boolean(document.isPrivate) === (privacyFilter === 'private'))).sort((a, b) => query.trim() ? (resultsById.get(b.id)?.score ?? 0) - (resultsById.get(a.id)?.score ?? 0) : sortOrder === 'title' ? (a.isPrivate ? 'Private document' : a.title).localeCompare(b.isPrivate ? 'Private document' : b.title) : sortOrder === 'pages' ? b.pages.length - a.pages.length : sortOrder === 'oldest' ? a.createdAt.localeCompare(b.createdAt) : b.createdAt.localeCompare(a.createdAt)), [documents, folderFilter, tagFilter, privacyFilter, sortOrder, recentOnly, query, searchFilter, resultsById])
   const activeVisualFilters = [searchFilter !== 'all', folderFilter !== 'All folders', tagFilter !== 'All tags', privacyFilter !== 'all'].filter(Boolean).length
+  const activeSearchOptions = [searchFilter !== 'all', !recentOnly, sortOrder !== 'recent', viewMode !== 'list', folderFilter !== 'All folders', tagFilter !== 'All tags', privacyFilter !== 'all'].filter(Boolean).length
   useEffect(() => { if (query.trim().length < 3) return; const timer = window.setTimeout(() => { setRecentSearches(current => { const next = [query.trim(), ...current.filter(value => value.toLocaleLowerCase() !== query.trim().toLocaleLowerCase())].slice(0, 5); localStorage.setItem('local.library.recent-searches', JSON.stringify(next)); return next }) }, 900); return () => window.clearTimeout(timer) }, [query])
   useEffect(() => {
     const back = (raw: Event) => {
       if (filtersOpen) setFiltersOpen(false)
+      else if (searchOptionsOpen) { setSearchOptionsOpen(false); setSearchHelp(false) }
       else if (pendingImport) setPendingImport(null)
       else if (deleteConfirm) setDeleteConfirm(false)
       else if (bulkMode) setBulkMode(null)
@@ -508,7 +523,7 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
     }
     window.addEventListener('local:back', back)
     return () => window.removeEventListener('local:back', back)
-  }, [filtersOpen, pendingImport, deleteConfirm, bulkMode, selecting])
+  }, [filtersOpen, searchOptionsOpen, pendingImport, deleteConfirm, bulkMode, selecting])
   const clearSelection = useCallback(() => {
     setSelecting(false)
     setSelectedIds([])
@@ -583,29 +598,14 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
           <ShieldCheck size={15} /> On-device
         </div>
       </header>
-      {browserMode && !loading && !allDocuments.length ? <section className="hero">
-        <div className="eyebrow">Your private document cabinet</div>
-        <h2>
-          Find any paper,
-          <br />
-          <em>right when you need it.</em>
-        </h2>
-        <p>Scan, organise and search every document. Nothing leaves this device.</p>
-        <div className="hero-actions">
-          <button className="primary-button" onClick={onScan}>
-            <Camera />
-            <span>{browserMode ? 'Add document images' : 'Scan a document'}</span>
-          </button>
-          <button className="import-pdf-button" disabled={importing} onClick={() => void importPdf()}>
-            {importing ? <span className="button-spinner" /> : <FileUp />}
-            <span>{importing ? 'Importing locally…' : 'Import PDF'}</span>
-          </button>
-        </div>
-      </section> : <section className="library-quick-actions" aria-label="Quick actions">
-        <button onClick={onScan}><Camera /><span><strong>{browserMode ? 'Add images' : 'Scan'}</strong><small>{browserMode ? 'Choose page photos' : 'Capture pages'}</small></span></button>
-        <button disabled={importing} onClick={() => void importPdf()}>{importing ? <span className="button-spinner" /> : <FileUp />}<span><strong>Import PDF</strong><small>Add from device</small></span></button>
-        <button onClick={onTools}><Files /><span><strong>Document tools</strong><small>Combine or edit</small></span></button>
-      </section>}
+      {!loading && !allDocuments.length ? <section className="first-document-welcome"><h2>Your documents, close at hand.</h2><p>Scan paper or import a PDF to get started.</p></section> : null}
+      <section className="library-quick-actions" aria-label="Quick actions">
+        <button className="quick-scan" onClick={onScan}><ScanLine /><span><strong>{browserMode ? 'Add images' : 'Scan'}</strong><small>{browserMode ? 'Choose page photos' : 'Capture paper'}</small></span></button>
+        <button className="quick-import" disabled={importing} onClick={() => void importPdf()}>{importing ? <span className="button-spinner" /> : <FileUp />}<span><strong>{importing ? 'Importing?' : 'Import PDF'}</strong><small>Add from device</small></span></button>
+        <button className="quick-tools" onClick={onTools}><SlidersHorizontal /><span><strong>Tools</strong><small>Pages &amp; text</small></span></button>
+      </section>
+      <div className="home-discover-row"><span><ShieldCheck size={14} /> Processed on your device</span><button onClick={onDiscover}><BookOpen size={16} /> Explore LOCAL <ChevronRight size={14} /></button></div>
+      {savedNotice ? <section className="completion-note" role="status"><Check /><div><strong>Saved to Home</strong><p>{savedNotice.isPrivate ? 'Your private document is saved. Authenticate to open it again.' : savedNotice.status === 'indexed' ? savedNotice.pages.some(page => page.ocrText.trim()) ? 'Ready to search. Try a word from this document.' : 'Your pages are saved. No readable text was detected.' : savedNotice.status === 'error' ? 'Your pages are saved. Open the document to retry text recognition.' : 'We?re recognising the text so you can search inside it.'}</p><button onClick={() => { onDismissNotice(); onOpen(savedNotice.id) }}>Open document <ChevronRight size={15} /></button></div><button aria-label="Dismiss saved message" onClick={onDismissNotice}><X size={18} /></button></section> : null}
       {importError ? <p className="hero-error library-import-message" role="alert">{importError}</p> : null}
       {importStatus ? <p className="import-status library-import-message" role="status"><span className="button-spinner" /> {importStatus}</p> : null}
       {processingDocuments.length ? (
@@ -643,37 +643,30 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
             <X size={18} />
           </button>
         ) : null}
-        {browserMode ? <button onClick={() => setSearchHelp(open => !open)} aria-label="Advanced search help" aria-expanded={searchHelp}>
-          <CircleHelp size={18} />
-        </button> : null}
+        <button className={searchOptionsOpen || activeSearchOptions ? 'search-options-trigger active' : 'search-options-trigger'} onClick={() => { setSearchOptionsOpen(open => !open); if (searchOptionsOpen) setSearchHelp(false) }} aria-label={`Search options${activeSearchOptions ? `, ${activeSearchOptions} changed` : ''}`} aria-expanded={searchOptionsOpen}>
+          <SlidersHorizontal size={18} />{activeSearchOptions ? <span>{activeSearchOptions}</span> : null}
+        </button>
       </div>
-      {browserMode && !query && recentSearches.length ? <div className="recent-searches"><span>Recent</span>{recentSearches.map(value => <button key={value} onClick={() => setQuery(value)}><Clock3 /> {value}</button>)}<button className="clear" onClick={() => { setRecentSearches([]); localStorage.removeItem('local.library.recent-searches') }}>Clear</button></div> : null}
-      {searchHelp ? (
-        <aside className="search-help">
-          <strong>Advanced search</strong>
-          <span>Combine normal words with filters:</span>
-          <div>
-            {['type:invoice', 'folder:"Tax records"', 'tag:important', 'amount:>5000', 'after:2026-01', 'private:true'].map((example) => (
-              <button key={example} onClick={() => setQuery(normaliseQuery(`${query} ${example}`))}>
-                {example}
-              </button>
-            ))}
-          </div>
-        </aside>
-      ) : null}
-      {browserMode ? <div className="smart-filter-strip" aria-label="Document filters">
-        {SEARCH_FILTERS.filter((filter) => QUICK_SEARCH_FILTER_IDS.has(filter.id)).map((filter) => (
-          <button key={filter.id} className={searchFilter === filter.id ? 'active' : ''} aria-pressed={searchFilter === filter.id} onClick={() => setSearchFilter(filter.id)}>
-            {filter.label}
-          </button>
-        ))}
-        <button className="more-filters" onClick={() => setFiltersOpen(true)}><SlidersHorizontal /> More</button>
-      </div> : null}
-      <div className="library-view-tools">{!browserMode && !query.trim() && searchFilter === 'all' ? <label>Added<select aria-label="Date added" value={recentOnly ? 'recent' : 'all'} onChange={event => setRecentOnly(event.target.value === 'recent')}><option value="recent">Last 3 weeks</option><option value="all">All time</option></select></label> : null}<button onClick={() => setFiltersOpen(true)}><SlidersHorizontal /> Filters{activeVisualFilters ? ` (${activeVisualFilters})` : ''}</button>{browserMode ? <><label>Sort<select disabled={Boolean(query.trim())} value={query.trim() ? 'relevance' : sortOrder} onChange={event => setSortOrder(event.target.value as typeof sortOrder)}>{query.trim() ? <option value="relevance">Relevance</option> : null}<option value="recent">Newest</option><option value="oldest">Oldest</option><option value="title">Title</option><option value="pages">Most pages</option></select></label><div role="group" aria-label="Home view"><button className={viewMode === 'list' ? 'active' : ''} onClick={() => { setViewMode('list'); localStorage.setItem('local.library.view', 'list') }} aria-label="List view" aria-pressed={viewMode === 'list'}><List /></button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => { setViewMode('grid'); localStorage.setItem('local.library.view', 'grid') }} aria-label="Grid view" aria-pressed={viewMode === 'grid'}><Grid2X2 /></button></div></> : null}</div>
+      {query.trim() && allDocuments.some(document => document.isPrivate) ? <p className="phase-four-note">Private documents are excluded from search. Open a private document to search within it after authentication.</p> : null}
+      {searchOptionsOpen ? <section className="search-options-panel" aria-label="Search options">
+        <div className="search-option-grid">
+          <label>Category<select value={searchFilter} onChange={event => setSearchFilter(event.target.value as SmartSearchFilter)}>{SEARCH_FILTERS.map(filter => <option key={filter.id} value={filter.id}>{filter.label}</option>)}</select></label>
+          <label>Added<select value={recentOnly ? 'recent' : 'all'} onChange={event => setRecentOnly(event.target.value === 'recent')}><option value="recent">Last 3 weeks</option><option value="all">All time</option></select></label>
+          <label>Sort<select disabled={Boolean(query.trim())} value={query.trim() ? 'relevance' : sortOrder} onChange={event => setSortOrder(event.target.value as typeof sortOrder)}>{query.trim() ? <option value="relevance">Relevance</option> : null}<option value="recent">Newest</option><option value="oldest">Oldest</option><option value="title">Title</option><option value="pages">Most pages</option></select></label>
+        </div>
+        <div className="search-option-actions">
+          <div role="group" aria-label="Home view"><button className={viewMode === 'list' ? 'active' : ''} onClick={() => { setViewMode('list'); localStorage.setItem('local.library.view', 'list') }} aria-label="List view" aria-pressed={viewMode === 'list'}><List /> List</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => { setViewMode('grid'); localStorage.setItem('local.library.view', 'grid') }} aria-label="Grid view" aria-pressed={viewMode === 'grid'}><Grid2X2 /> Grid</button></div>
+          <button onClick={() => setFiltersOpen(true)}><SlidersHorizontal /> More filters{activeVisualFilters ? ` (${activeVisualFilters})` : ''}</button>
+          <button onClick={() => setSearchHelp(open => !open)} aria-expanded={searchHelp}><CircleHelp /> Search tips</button>
+        </div>
+        {browserMode && !query && recentSearches.length ? <div className="recent-searches"><span>Recent searches</span>{recentSearches.map(value => <button key={value} onClick={() => { setQuery(value); setSearchOptionsOpen(false) }}><Clock3 /> {value}</button>)}<button className="clear" onClick={() => { setRecentSearches([]); localStorage.removeItem('local.library.recent-searches') }}>Clear</button></div> : null}
+        {searchHelp ? <aside className="search-help"><strong>Search tips</strong><span>Add one of these to your search:</span><div>{['type:invoice', 'folder:"Tax records"', 'tag:important', 'amount:>5000', 'after:2026-01'].map(example => <button key={example} onClick={() => { setQuery(normaliseQuery(`${query} ${example}`)); setSearchOptionsOpen(false); setSearchHelp(false) }}>{example}</button>)}</div></aside> : null}
+        <button className="search-options-done" onClick={() => { setSearchOptionsOpen(false); setSearchHelp(false) }}>Done</button>
+      </section> : null}
       <section className="section-block">
         <div className="section-heading">
           <div>
-            <span>{selecting ? `${selectedIds.length} selected` : query || searchFilter !== 'all' ? 'Matching documents' : 'Recent documents'}</span>
+            <span>{selecting ? `${selectedIds.length} selected` : query ? 'Matching documents' : activeVisualFilters || !recentOnly ? 'Filtered documents' : 'Recent documents'}</span>
             <small>
               {displayDocuments.length} {displayDocuments.length === 1 ? 'document' : 'documents'}
             </small>
@@ -699,10 +692,10 @@ function Library({ documents, allDocuments, searchResults, query, setQuery, sear
             })}
           </div>
         ) : (
-          <EmptyLibrary onScan={onScan} searching={Boolean(query || searchFilter !== 'all' || activeVisualFilters || recentOnly)} />
+          <EmptyLibrary onScan={onScan} searching={Boolean(query || searchFilter !== 'all' || activeVisualFilters || (recentOnly && allDocuments.length))} />
         )}
       </section>
-      {filtersOpen ? <div className="tool-sheet-layer" role="presentation" onClick={() => setFiltersOpen(false)}><section className="tool-sheet library-filter-sheet" role="dialog" aria-modal="true" aria-label="Filter documents" onClick={event => event.stopPropagation()}><header><div><SlidersHorizontal /><span><strong>Filter documents</strong><small>Choose visible document properties</small></span></div><button onClick={() => setFiltersOpen(false)} aria-label="Close"><X /></button></header><label>Category<select value={searchFilter} onChange={event => setSearchFilter(event.target.value as SmartSearchFilter)}>{SEARCH_FILTERS.map(filter => <option key={filter.id} value={filter.id}>{filter.label}</option>)}</select></label><label>Folder<select value={folderFilter} onChange={event => setFolderFilter(event.target.value)}>{folders.map(folder => <option key={folder}>{folder}</option>)}</select></label><label>Tag<select value={tagFilter} onChange={event => setTagFilter(event.target.value)}>{tags.map(tag => <option key={tag}>{tag}</option>)}</select></label>{!browserMode ? <div className="library-view-tools"><label>Sort<select disabled={Boolean(query.trim())} value={query.trim() ? 'relevance' : sortOrder} onChange={event => setSortOrder(event.target.value as typeof sortOrder)}>{query.trim() ? <option value="relevance">Relevance</option> : null}<option value="recent">Newest</option><option value="oldest">Oldest</option><option value="title">Title</option><option value="pages">Most pages</option></select></label><div role="group" aria-label="Home view"><button className={viewMode === 'list' ? 'active' : ''} onClick={() => { setViewMode('list'); localStorage.setItem('local.library.view', 'list') }} aria-label="List view" aria-pressed={viewMode === 'list'}><List /></button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => { setViewMode('grid'); localStorage.setItem('local.library.view', 'grid') }} aria-label="Grid view" aria-pressed={viewMode === 'grid'}><Grid2X2 /></button></div></div> : null}<fieldset><legend>Privacy</legend>{(['all','public','private'] as const).map(value => <button key={value} className={privacyFilter === value ? 'selected' : ''} onClick={() => setPrivacyFilter(value)} aria-pressed={privacyFilter === value}>{value === 'all' ? 'All' : value === 'public' ? 'Standard' : 'Private'}</button>)}</fieldset><div className="filter-sheet-actions"><button onClick={() => { setSearchFilter('all'); setFolderFilter('All folders'); setTagFilter('All tags'); setPrivacyFilter('all') }}>Clear all</button><button onClick={() => setFiltersOpen(false)}>Show {displayDocuments.length} documents</button></div></section></div> : null}
+      {filtersOpen ? <div className="tool-sheet-layer" role="presentation" onClick={() => setFiltersOpen(false)}><section className="tool-sheet library-filter-sheet" role="dialog" aria-modal="true" aria-label="More document filters" onClick={event => event.stopPropagation()}><header><div><SlidersHorizontal /><span><strong>More filters</strong><small>Use these when the library gets busy</small></span></div><button onClick={() => setFiltersOpen(false)} aria-label="Close"><X /></button></header><label>Folder<select value={folderFilter} onChange={event => setFolderFilter(event.target.value)}>{folders.map(folder => <option key={folder}>{folder}</option>)}</select></label><label>Tag<select value={tagFilter} onChange={event => setTagFilter(event.target.value)}>{tags.map(tag => <option key={tag}>{tag}</option>)}</select></label><fieldset><legend>Privacy</legend>{(['all','public','private'] as const).map(value => <button key={value} className={privacyFilter === value ? 'selected' : ''} onClick={() => setPrivacyFilter(value)} aria-pressed={privacyFilter === value}>{value === 'all' ? 'All' : value === 'public' ? 'Standard' : 'Private'}</button>)}</fieldset><div className="filter-sheet-actions"><button onClick={() => { setFolderFilter('All folders'); setTagFilter('All tags'); setPrivacyFilter('all') }}>Clear filters</button><button onClick={() => { setFiltersOpen(false); setSearchOptionsOpen(false) }}>Show {displayDocuments.length} documents</button></div></section></div> : null}
       {selecting && selectedIds.length > 0 ? <BulkActionBar count={selectedIds.length} busy={bulkBusy} error={bulkError} allPrivate={selectedDocuments.every((document) => document.isPrivate)} onMove={() => setBulkMode('move')} onTag={() => setBulkMode('tag')} onPrivacy={() => void applyBulk('privacy', !selectedDocuments.every((document) => document.isPrivate))} onDelete={() => setDeleteConfirm(true)} onCancel={clearSelection} /> : null}
       {bulkMode ? <BulkOrganizeSheet mode={bulkMode} count={selectedIds.length} busy={bulkBusy} error={bulkError} onClose={() => setBulkMode(null)} onApply={(value) => void applyBulk(bulkMode, value)} /> : null}
       {deleteConfirm ? <ConfirmSheet title={`Move ${selectedIds.length} document${selectedIds.length === 1 ? '' : 's'} to Recently Deleted?`} message="You can restore them for 30 days before they are permanently removed." confirmLabel="Move to Recently Deleted" onConfirm={() => void deleteBulk()} onCancel={() => setDeleteConfirm(false)} /> : null}
@@ -760,8 +753,8 @@ function EmptyLibrary({ onScan, searching }: { onScan: () => void; searching: bo
       <div>
         <FileText />
       </div>
-      <h3>{searching ? 'No matching documents' : 'Your cabinet is empty'}</h3>
-      <p>{searching ? 'Try another word or phrase.' : 'Scan your first document to make it searchable and easy to find.'}</p>
+      <h3>{searching ? 'No matching documents' : 'Ready for your first document'}</h3>
+      <p>{searching ? 'Try another word or phrase.' : 'Use Scan or Import PDF above. Your documents will appear here after you save them.'}</p>
       {!searching && (
         <button className="secondary-button" onClick={onScan}>
           <Camera size={18} /> Scan now
@@ -1606,7 +1599,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
       </header>
       <div className={`processing-banner ${document.status === 'error' ? 'has-error' : ''} ${document.status === 'ocr_pending' || document.status === 'ocr_processing' ? 'working' : ''}`}>
         <Clock3 size={17} />
-        <span>{statusLabel(document)}</span>
+        <span>{document.status === 'indexed' ? statusLabel(document) : document.status === 'error' ? 'Pages saved ? Text recognition needs attention' : `Saved to Home ? ${statusLabel(document)}`}</span>
         {document.status === 'indexed' && <Check size={17} />}
         {(document.status === 'ocr_pending' || document.status === 'ocr_processing') && (
           <button
@@ -2238,7 +2231,7 @@ function TrashScreen({ onBack, onChanged }: { onBack: () => void; onChanged: () 
   )
 }
 
-function SettingsScreen({ documents, onChanged, onOpenTrash }: { documents: VaultDocument[]; onChanged: () => Promise<void>; onOpenTrash: () => void }) {
+function SettingsScreen({ documents, onChanged, onOpenTrash, onDiscover }: { documents: VaultDocument[]; onChanged: () => Promise<void>; onOpenTrash: () => void; onDiscover: () => void }) {
   const [guideOpen, setGuideOpen] = useState(false)
   const [policyOpen, setPolicyOpen] = useState(false)
   const [textSize, setTextSize] = useState<TextSizePreference>(() => {
@@ -2260,44 +2253,10 @@ function SettingsScreen({ documents, onChanged, onOpenTrash }: { documents: Vaul
         </div>
         <div>
           <h2>Private by design</h2>
-          <p>Documents stay on this device. OCR and search indexing run locally. LOCAL never uploads or synchronises your documents. Only an export or share action you choose sends a copy outside the app.</p>
+          <p>Processing happens on your device. You choose what to export or share. LOCAL does not automatically sync your library; create an encrypted backup to keep a recovery copy.</p>
         </div>
       </section>
-      <button className="usage-guide-entry" onClick={() => setGuideOpen((open) => !open)} aria-expanded={guideOpen}>
-        <span>
-          <CircleHelp />
-        </span>
-        <div>
-          <strong>How to use LOCAL well</strong>
-          <small>A quick private-document workflow</small>
-        </div>
-        {guideOpen ? <ChevronUp /> : <ChevronDown />}
-      </button>
-      {guideOpen && (
-        <section className="usage-guide">
-          <ol>
-            <li>
-              <strong>Scan or import</strong>
-              <span>Capture paper with automatic edges, or import an existing PDF.</span>
-            </li>
-            <li>
-              <strong>Review and organise</strong>
-              <span>Crop pages, use folders and tags, and let local OCR make everything searchable.</span>
-            </li>
-            <li>
-              <strong>Find it quickly</strong>
-              <span>Search words inside documents instead of browsing filenames and cloud drives.</span>
-            </li>
-            <li>
-              <strong>Protect what matters</strong>
-              <span>Make sensitive documents private; add a PDF password before exporting when needed.</span>
-            </li>
-          </ol>
-          <p>
-            <ShieldCheck /> Faster lookup without an account, subscription, upload delay or server copy.
-          </p>
-        </section>
-      )}
+      <button className="usage-guide-entry discover-entry" onClick={onDiscover}><span><BookOpen /></span><div><strong>Discover LOCAL</strong><small>Scan, find, reuse and protect your documents</small></div><ChevronRight /></button>
       <StorageSecurityPanel />
       <section className="text-size-card">
         <header><strong>Text size</strong><small>Use a comfortable, consistent size throughout LOCAL</small></header>
@@ -2702,7 +2661,7 @@ function DesktopSidebar({ active, documentCount, onOpen }: { active: Screen['nam
   const items = [
     { name: 'home' as const, label: 'Home', detail: `${documentCount} ${documentCount === 1 ? 'document' : 'documents'}`, icon: <Home /> },
     { name: 'folders' as const, label: 'Folders', detail: 'Organise your files', icon: <Folder /> },
-    { name: 'actions' as const, label: 'Document tools', detail: 'Combine, edit and export', icon: <Files /> },
+    { name: 'actions' as const, label: 'Document tools', detail: 'Arrange pages and reuse text', icon: <Files /> },
     { name: 'settings' as const, label: 'Settings', detail: 'Storage and preferences', icon: <Settings /> }
   ]
   return <aside className="desktop-sidebar" aria-label="Desktop navigation">

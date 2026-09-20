@@ -11,13 +11,13 @@ export function validateBackupPayload(value: unknown): asserts value is BackupPa
   if (!['local-backup-v1', 'local-backup-v2'].includes(payload.format as string) || !text(payload.createdAt) || !Array.isArray(payload.documents)) fail()
   if (payload.folders !== undefined && !strings(payload.folders)) fail()
   const ids = new Set<string>()
+  const pageIds = new Set<string>()
   for (const item of payload.documents as unknown[]) {
     const document = object(item)
     if (!id(document.id) || ids.has(document.id as string) || !text(document.title) || !text(document.folder) || !strings(document.tags) || !Array.isArray(document.pages) || !text(document.createdAt) || !text(document.updatedAt)) fail()
     ids.add(document.id as string)
     if (!['saved', 'ocr_pending', 'ocr_processing', 'indexed', 'error'].includes(document.status as string)) fail()
     if (document.isPrivate !== undefined && typeof document.isPrivate !== 'boolean') fail()
-    const pageIds = new Set<string>()
     for (const item of document.pages as unknown[]) {
       const page = object(item)
       if (!id(page.id) || pageIds.has(page.id as string) || !text(page.ocrText) || ![0, 90, 180, 270].includes(page.rotation as number) || !['pending', 'processing', 'complete', 'error'].includes(page.ocrState as string)) fail()

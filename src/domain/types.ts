@@ -126,3 +126,4 @@ export type Screen =
     }
   | { name: 'viewer'; id: string; page?: number; query?: string }
   | { name: 'capture' }
+  | { name: 'discover'; from: 'home' | 'settings' }

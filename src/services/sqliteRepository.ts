@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS pages (
   FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS pages_document_position ON pages(document_id, position);
+CREATE TRIGGER IF NOT EXISTS pages_owner_guard BEFORE INSERT ON pages
+WHEN EXISTS (SELECT 1 FROM pages WHERE id = NEW.id AND document_id <> NEW.document_id)
+BEGIN SELECT RAISE(ABORT, 'Page belongs to another document.'); END;
 CREATE TABLE IF NOT EXISTS processing_jobs (
   id TEXT PRIMARY KEY NOT NULL, document_id TEXT NOT NULL, page_id TEXT, type TEXT NOT NULL,
   status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0,
@@ -217,6 +220,13 @@ export const sqliteRepository = {
       const db = await getConnection()
       await db.execute('BEGIN TRANSACTION;', false)
       try {
+        const pageIds = new Set<string>()
+        for (const page of document.pages) {
+          if (pageIds.has(page.id)) throw new Error('Duplicate page identifier.')
+          pageIds.add(page.id)
+          const owners = (await db.query('SELECT document_id FROM pages WHERE id = ?', [page.id])).values ?? []
+          if (owners.some(owner => owner.document_id !== document.id)) throw new Error('Page belongs to another document.')
+        }
         await db.run(
           `INSERT INTO documents(id,title,folder,created_at,updated_at,status,tags_json,storage_version,pdf_path,pdf_generated_at,processing_stage,title_source,smart_metadata_json,is_private,pdf_password_protected,storage_protection,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,folder=excluded.folder,updated_at=excluded.updated_at,status=excluded.status,tags_json=excluded.tags_json,storage_version=excluded.storage_version,pdf_path=excluded.pdf_path,pdf_generated_at=excluded.pdf_generated_at,processing_stage=excluded.processing_stage,title_source=excluded.title_source,smart_metadata_json=excluded.smart_metadata_json,is_private=excluded.is_private,pdf_password_protected=excluded.pdf_password_protected,storage_protection=excluded.storage_protection,deleted_at=excluded.deleted_at`,
@@ -256,11 +266,11 @@ export const sqliteRepository = {
     if (!terms.length) return this.list()
     if (ftsAvailable) {
       const match = terms.map((term) => `"${term.replaceAll('"', '""')}"*`).join(' AND ')
-      const rows = (await db.query('SELECT d.* FROM document_search s JOIN documents d ON d.id=s.document_id WHERE document_search MATCH ? ORDER BY bm25(document_search), d.updated_at DESC', [match])).values ?? []
+      const rows = (await db.query('SELECT d.* FROM document_search s JOIN documents d ON d.id=s.document_id WHERE d.is_private = 0 AND document_search MATCH ? ORDER BY bm25(document_search), d.updated_at DESC', [match])).values ?? []
       return documentsFromRows(rows)
     }
     const needle = `%${terms.join('%')}%`
-    const rows = (await db.query(`SELECT DISTINCT d.* FROM documents d LEFT JOIN pages p ON p.document_id=d.id WHERE lower(d.title || ' ' || d.folder || ' ' || d.tags_json || ' ' || coalesce(d.smart_metadata_json,'') || ' ' || coalesce(p.ocr_text,'')) LIKE lower(?) ORDER BY d.updated_at DESC`, [needle])).values ?? []
+    const rows = (await db.query(`SELECT DISTINCT d.* FROM documents d LEFT JOIN pages p ON p.document_id=d.id WHERE d.is_private = 0 AND lower(d.title || ' ' || d.folder || ' ' || d.tags_json || ' ' || coalesce(d.smart_metadata_json,'') || ' ' || coalesce(p.ocr_text,'')) LIKE lower(?) ORDER BY d.updated_at DESC`, [needle])).values ?? []
     return documentsFromRows(rows)
   },
 
