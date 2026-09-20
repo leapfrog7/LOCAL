@@ -1,8 +1,8 @@
 {
   "name": "local-document-vault",
   "private": true,
-  "version": "1.0.9",
-  "androidVersionCode": 20,
+  "version": "1.0.10",
+  "androidVersionCode": 21,
   "type": "module",
   "scripts": {
     "dev": "vite",

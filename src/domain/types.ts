@@ -25,7 +25,7 @@ export interface DocumentPage {
   annotations?: PageAnnotations
 }
 
-export type AnnotationTool = 'pen' | 'highlighter'
+export type AnnotationTool = 'pen' | 'highlighter' | 'line' | 'arrow' | 'rectangle' | 'ellipse' | 'text'
 export interface AnnotationPoint { x: number; y: number }
 export interface AnnotationStroke {
   id: string
@@ -33,6 +33,8 @@ export interface AnnotationStroke {
   color: string
   width: number
   points: AnnotationPoint[]
+  text?: string
+  fontSize?: number
 }
 export interface PageAnnotations {
   version: 1

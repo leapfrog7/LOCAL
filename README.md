@@ -44,8 +44,10 @@ Android Studio and an Android SDK are required to build the APK.
 - Background OCR that survives activity recreation, with immediate PDF access and bounded retries
 - Smart on-device titles and metadata extraction for common receipts, bills, letters, and office documents
 - Document viewer, folder browser, rename, deletion, post-save crop correction, and one-tap PDF export
-- Durable pen and highlighter annotations with normalized page coordinates, stroke erasing, undo/redo, visibility controls, annotated thumbnails, and searchable-PDF export
+- Recoverable annotation drafts with pen, OCR-aware highlighting, partial erasing, movable strokes, shapes, arrows, typed notes, undo/redo, annotated thumbnails, and searchable-PDF export
+- Content-first Library with contextual document tools, four-destination navigation, mobile-friendly text preferences, long-press selection, compact filtering, and thumbnail-rich folders
 - Native import of existing PDFs into the same local OCR and search pipeline
+- Browser workspace with local PDF.js import, responsive desktop navigation, and no document uploads
 - Ordered document combining, selected-page extraction, and three-level PDF compression
 - Multi-select move, tag, privacy, and delete actions
 - Searchable document tags and structured filters for type, folder, tag, organization, privacy, date, and amount
@@ -66,5 +68,7 @@ Google ML Kit Document Scanner owns Android capture, edge detection, cropping, a
 Domain types live in `src/domain`. UI code depends on contracts in `src/services/contracts.ts`, not OCR engines, SQLite, or native APIs directly. This keeps browser and native implementations replaceable without changing document-management screens.
 
 For a guided tour of the repository, runtime flows, native bridge, persistence model, and feature-to-file index, see [`docs/mental_map.md`](docs/mental_map.md).
+
+GitHub Pages publishes the product site at the root and builds the production React browser workspace under `/app/`, giving visitors equal paths to continue in the browser or download the signed Android APK.
 
 No analytics, telemetry, authentication, cloud database, remote OCR, or remote storage is included.

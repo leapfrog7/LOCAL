@@ -746,6 +746,54 @@ body { font-size: var(--type-body); line-height: 1.45; }
 .page-number-grid button[aria-current="page"] { color: white; background: var(--green); }
 .viewer-screen .annotation-toolbar { position: relative; inset: auto; flex: none; margin: 0; border-radius: 0; padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
 .annotation-toolbar button { min-width: 40px; min-height: 40px; }
+
+/* Compact annotation workspace: primary tools stay visible; refinements use progressive disclosure. */
+.viewer-screen .annotation-toolbar { display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 9px max(10px, env(safe-area-inset-right)) calc(9px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); border: 0; border-top: 1px solid #ffffff20; background: #241c1bea; }
+.annotation-status, .annotation-primary-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.annotation-status > span { min-width: 0; display: flex; flex-direction: column; }
+.annotation-status strong { font-size: 12px; }
+.annotation-status small { overflow: hidden; color: #dfcfcc; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.annotation-status .done { min-width: 78px; min-height: 44px; flex: none; }
+.annotation-primary-row > [role="group"] { flex: 1; display: grid; grid-template-columns: repeat(5,minmax(44px,1fr)); gap: 5px; }
+.annotation-toolbar button { min-width: 44px; min-height: 44px; }
+.annotation-primary-row .annotation-options-toggle { flex: none; }
+.annotation-options { display: flex; align-items: center; gap: 9px; padding-top: 8px; border-top: 1px solid #ffffff1e; overflow-x: auto; scrollbar-width: none; }
+.annotation-options::-webkit-scrollbar { display: none; }
+.annotation-presets, .annotation-sizes, .annotation-options > [role="group"] { display: flex; align-items: center; gap: 4px; flex: none; }
+.annotation-create-tools { padding-right: 6px; border-right: 1px solid #ffffff1e; }
+.annotation-create-tools .annotation-edit-text { width: auto; grid-template-columns: 16px auto; gap: 4px; padding-inline: 9px; }
+.annotation-create-tools .annotation-edit-text span { font-size: 9px; font-weight: 800; }
+.annotation-presets button { min-width: 34px; width: 34px; min-height: 34px; height: 34px; border: 3px solid transparent; border-radius: 50%; background: var(--annotation-swatch); box-shadow: inset 0 0 0 1px #ffffff50; }
+.annotation-presets button.selected { border-color: white; box-shadow: 0 0 0 2px #ffb3aa; }
+.annotation-sizes button { width: 40px; min-width: 40px; }
+.annotation-sizes i { display: block; width: 25px; border-radius: 10px; background: currentColor; }
+.annotation-sizes button.selected { color: #431d19; background: #ffb3aa; }
+.annotation-snap { min-width: max-content; min-height: 44px; padding: 0 8px; border-radius: 9px; background: #ffffff10; }
+.annotation-snap input { width: 18px; height: 18px; accent-color: #ffb3aa; }
+.annotation-snap span { color: #f7e8e6; font-size: 10px; font-weight: 750; }
+.annotation-options button.danger { color: #ffc2bd; }
+.annotation-layer.selecting { cursor: default; }
+.annotation-selection { stroke: #0b84ff; stroke-opacity: .9; stroke-dasharray: .012 .008; filter: drop-shadow(0 0 2px white); }
+.annotation-text-sheet { width: min(100%,500px); margin: auto auto 0; padding: 18px 18px calc(22px + env(safe-area-inset-bottom)); border-radius: 23px 23px 0 0; color: var(--ink); background: #fbfaf6; }
+.annotation-text-sheet header { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.annotation-text-sheet header > div { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.annotation-text-sheet header strong { font-size: 17px; }
+.annotation-text-sheet header span { color: var(--muted); font-size: 10px; }
+.annotation-text-sheet header button { width: 44px; height: 44px; border: 0; border-radius: 11px; background: #e8ece7; }
+.annotation-text-sheet form { display: grid; gap: 8px; padding-top: 14px; }
+.annotation-text-sheet label { font-size: 11px; font-weight: 800; }
+.annotation-text-sheet textarea { width: 100%; resize: vertical; min-height: 105px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: white; font: inherit; line-height: 1.5; }
+.annotation-text-sheet form > small { justify-self: end; color: var(--muted); font-size: 9px; }
+.annotation-text-sheet form > div { display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; }
+.annotation-text-sheet form > div button { min-height: 48px; border: 1px solid var(--line); border-radius: 11px; color: var(--green); background: white; font: inherit; font-weight: 800; }
+.annotation-text-sheet form > div button[type="submit"] { border-color: var(--green); color: white; background: var(--green); }
+.annotation-text-sheet form > div button:disabled { opacity: .4; }
+
+@media (max-width: 380px) {
+  .annotation-primary-row { gap: 5px; }
+  .annotation-primary-row > [role="group"] { gap: 2px; }
+  .annotation-toolbar button { min-width: 42px; }
+}
 .annotation-save-sheet { color: var(--ink); max-height: 90dvh; overflow-y: auto; }
 .viewer-screen .action-sheet-layer, .viewer-screen .tool-sheet-layer { z-index: 100; }
 .annotation-save-sheet { position: relative; isolation: isolate; background: #fbfaf6; }
@@ -883,3 +931,21 @@ body { font-size: var(--type-body); line-height: 1.45; }
 @media (max-width: 430px) { .search-option-grid { grid-template-columns: 1fr 1fr; } .search-option-grid label:last-child { grid-column: 1 / -1; } }
 @media (max-width: 360px) { .app-shell .library-quick-actions { gap: 7px; } .app-shell .library-quick-actions > button { padding: 12px 9px; } .discover-start { padding: 15px; gap: 10px; } .discover-chapter summary { gap: 9px; padding: 15px 11px; } .search-option-actions > div { width: 100%; } .search-option-actions > div button { flex: 1; } }
 @media (prefers-reduced-motion: reduce) { .app-shell .library-quick-actions > button, .discover-chevron, .discover-action { transition: none; transform: none; } }
+
+/* Keep the annotation workspace vertical after the legacy compact-view rules above. */
+@media (max-width: 680px) {
+  .viewer-screen .annotation-toolbar { flex-flow: column nowrap; overflow: visible; }
+  .annotation-status, .annotation-primary-row, .annotation-options { width: 100%; }
+  .annotation-options { display: grid; grid-template-columns: minmax(0,1fr) auto; overflow: visible; }
+  .annotation-create-tools { grid-column: 1 / -1; grid-row: 1; width: 100%; padding-right: 0; padding-bottom: 7px; border-right: 0; border-bottom: 1px solid #ffffff1e; }
+  .annotation-presets { grid-column: 1; grid-row: 2; }
+  .annotation-sizes { grid-column: 2; grid-row: 2; }
+  .annotation-snap { grid-column: 1; grid-row: 3; }
+  .annotation-actions { grid-column: 2; grid-row: 3; justify-self: end; }
+}
+@media (max-height: 500px) and (orientation: landscape) {
+  .viewer-screen .annotation-toolbar { flex-flow: row nowrap; align-items: center; overflow-x: auto; }
+  .annotation-status { min-width: 230px; }
+  .annotation-primary-row { min-width: 310px; }
+  .annotation-options { min-width: max-content; display: flex; padding-top: 0; padding-left: 8px; border-top: 0; border-left: 1px solid #ffffff1e; }
+}

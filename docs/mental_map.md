@@ -71,7 +71,7 @@ When adding persisted fields, update the domain types first, then the SQLite sch
 - owns the active `Screen` state instead of using a routing library;
 - loads and refreshes documents;
 - coordinates app locking and Android Back behavior;
-- renders Library, Folders, Scan, Actions, Settings, Viewer, Trash, and Scanner Lab screens;
+- renders Library, Folders, Scan, Document Tools, Settings, Viewer, Trash, and Scanner Lab screens;
 - starts import, scan, save, OCR, and document-update workflows;
 - contains several screen components that have not yet been split into separate files.
 
@@ -169,7 +169,7 @@ Large images and PDFs are files, not database blobs. A document page can have se
 
 Private documents add Android Keystore-backed file encryption and require a revealed session before decrypted URLs are exposed. Portable PDF passwords are a separate feature: they protect exported/shared PDF files, while LOCAL's private lock protects access inside the app.
 
-Browser development uses IndexedDB for metadata and bundled Tesseract assets from `public/ocr/`. Browser behavior is a fallback and does not reproduce every Android security or native-file feature.
+Browser development and the public web workspace use IndexedDB for metadata, bundled Tesseract assets from `public/ocr/`, and an on-demand PDF.js worker for local PDF page rendering. Browser behavior does not reproduce Android biometrics, Keystore protection, native sharing, or background processing, so the interface explains browser-storage retention and keeps the Android download visible.
 
 ## Core runtime flows
 
@@ -206,8 +206,8 @@ Saved document
 ### Import PDF
 
 ```text
-Android file picker
-  -> PdfImportPlugin validates and renders each PDF page
+Android file picker or browser file input
+  -> PdfImportPlugin on Android, or locally loaded PDF.js in the browser, validates and renders each PDF page
   -> imported pages become ordinary DocumentPage records
   -> storage check and folder selection
   -> same save, OCR, PDF, and indexing pipeline as a scan
@@ -225,13 +225,17 @@ A normal delete sets `deletedAt`; it does not immediately destroy files. Recentl
 
 ## Navigation and UI state
 
-LOCAL does not use React Router. The `Screen` union and `screen` state in `App.tsx` select the current top-level screen. The persistent bottom navigation opens Library, Folders, Scan, Actions, and Settings.
+LOCAL does not use React Router. The `Screen` union and `screen` state in `App.tsx` select the current top-level screen. The persistent bottom navigation is intentionally limited to four everyday destinations: Library, Folders, Scan, and Settings. Document Tools is opened from the Library's contextual quick actions instead of occupying a permanent navigation slot.
+
+At browser widths of 900px and above, `App.tsx` adds the `web-platform` shell and `styles.css` replaces the mobile bottom navigation with a persistent desktop sidebar, wider grids, desktop tool sheets, and pointer hover feedback. Page-operation grids use the full stored page image instead of stretching the small list thumbnail, keep the complete page visible with `object-fit: contain`, and expose drag ordering alongside accessible arrow controls. The Viewer uses measured source and canvas dimensions to make its baseline **Fit** state contain the whole portrait, landscape, or rotated page; zoom is relative to that fitted size. The browser-only `desktop-viewer` class keeps desktop reading controls stable and gives the thumbnail strip enough inspection space. These desktop classes are never added inside Capacitor, so desktop layout rules cannot change the Android app even on a large display. Narrow browsers deliberately retain the mobile layout. Motion is brief and functional, with `prefers-reduced-motion` overrides.
 
 Android Back first gives active overlays/editors a chance to consume a custom `local:back` event. Otherwise it returns a non-home screen to the Library; a quick second Back minimizes the app. When adding a modal or sheet, add it to this dismissal order so Back closes the nearest UI layer before navigating away.
 
 Per-document page, reading mode, zoom, scroll position, bookmarks, page theme, margin preference, and screen-awake preference are stored through [`viewerStateService.ts`](../src/services/viewerStateService.ts). This lightweight reading preference is separate from durable document content: document metadata belongs in the repository, while disposable viewer position may use versioned `localStorage`. Continuous and two-page views keep stable lightweight page placeholders and decode images only around the viewport. The OCR reading view reflows existing on-device recognised text and uses the installed system speech engine for read-aloud. Page fitting is automatic; Single page view provides explicit 25%–400% zoom controls.
 
-Annotations are durable document content, not viewer state. The viewer edits normalized vector strokes, SQLite stores them in `pages.annotations_json`, browser IndexedDB and encrypted backups serialize them with each page, and PDF generation composites them while retaining the existing invisible OCR layer. Annotation drafts persist automatically; **Done** updates the current document, while creating an annotated copy is a secondary option. Finalization rebuilds thumbnails and a versioned PDF without changing recognised text/state or scheduling recognition again; the old PDF is removed only after the new metadata save succeeds.
+The global Small, Medium, or Large interface-text preference is also local presentation state. Semantic title, heading, body, label, and caption tokens scale together, and primary mobile controls use a shared 44px minimum touch target. Library selection follows the familiar mobile convention: hold a document to enter selection, then tap additional documents. **Document tools** groups operations on documents already stored in LOCAL; it is not analytics, tracking, or a reporting service. Returning users get compact Scan, Import, and Document Tools actions instead of the onboarding hero. The Library exposes only the most useful category chips and keeps the complete category/folder/tag/privacy filter set in one sheet. Folder cards summarize document/page counts and show up to three local thumbnails, while folder creation uses the floating action appropriate to that screen.
+
+Annotations are durable document content, not viewer state. The viewer edits normalized freehand strokes, OCR-snapped highlights, geometric shapes, arrows, and positioned text notes. SQLite stores them in `pages.annotations_json`; browser IndexedDB and encrypted backups serialize them with each page; PDF generation composites them while retaining the existing invisible OCR layer. Drafts recover automatically, using encrypted SQLite settings on Android. **Done** asks whether to create an annotated copy or update the current document. Finalization rebuilds thumbnails and a versioned PDF without changing recognised text/state or scheduling recognition again; the old PDF is removed only after the new metadata save succeeds.
 
 Viewer language should describe user outcomes rather than implementation details. The normal interface calls reflowed recognition output **Text view**, uses **Recognise text again** for recovery, and reserves “OCR” for engineering documentation and diagnostics. In normal reading mode, the compact page button opens thumbnails; annotation mode replaces ordinary page controls with its focused tool bar until the user taps **Done**.
 

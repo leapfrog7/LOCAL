@@ -5,8 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { App as CapacitorApp } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
-import { PenTool, Archive, ArrowLeft, Bookmark, Camera, Check, ChevronRight, CircleHelp, Clock3, Copy, Crop, Download, Eraser, Eye, EyeOff, ExternalLink, FileText, FileUp, Files, Folder, FolderOpen, GripVertical, Highlighter, Home, ImagePlus, LockKeyhole, Moon, MoreHorizontal, MousePointer2, Redo2, RotateCw, Save, ScanLine, Search, Settings, ShieldCheck, ChevronDown, ChevronUp, Share2, Sun, Tag, Trash2, Undo2, Upload, Volume2, VolumeX, X, PauseCircle, RefreshCw, Pencil, Lock, Unlock, RotateCcw, AlertTriangle, Grid2X2, List, SlidersHorizontal, BookOpen, Rows3, AppWindow, Hash } from 'lucide-react'
-import type { AnnotationStroke, DocumentPage, Screen, VaultDocument } from './domain/types'
+import { PenTool, Archive, ArrowLeft, ArrowUpRight, Bookmark, Camera, Check, ChevronRight, Circle, CircleHelp, Clock3, Copy, Crop, Download, Eraser, Eye, EyeOff, ExternalLink, FileText, FileUp, Files, Folder, FolderOpen, GripVertical, Hand, Highlighter, Home, ImagePlus, LockKeyhole, Minus, Moon, MoreHorizontal, MousePointer2, Redo2, RotateCw, Save, ScanLine, Search, Settings, ShieldCheck, ChevronDown, ChevronUp, Share2, Square, Sun, Tag, Trash2, Type, Undo2, Upload, Volume2, VolumeX, X, PauseCircle, RefreshCw, Pencil, Lock, Unlock, RotateCcw, AlertTriangle, Grid2X2, List, SlidersHorizontal, BookOpen, Rows3, AppWindow, Hash } from 'lucide-react'
+import type { AnnotationPoint, AnnotationStroke, DocumentPage, Screen, VaultDocument } from './domain/types'
 import { documentsRepository } from './services/documentRepository'
 import { cancelProcessing, processDocument, resumePendingProcessing, retryProcessing } from './services/processingQueue'
 import { filesToPages, nativeScansToPages } from './services/scannerService'
@@ -37,6 +37,7 @@ import { privateStorageService } from './services/privateStorageService'
 import { folderService } from './services/folderService'
 import { viewerStateService, type ViewerReadingState } from './services/viewerStateService'
 import { annotationCopy, finalizeAnnotations } from './services/annotationService'
+import { annotationDraftService } from './services/annotationDraftService'
 import { ActionsScreen } from './features/actions/ActionsScreen'
 import type { ActionSaveMode } from './features/actions/ActionsScreen'
 import { LatestRequest } from './services/latestRequest'
@@ -1188,9 +1189,15 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
   const [chromeVisible, setChromeVisible] = useState(true)
   const [speaking, setSpeaking] = useState(false)
   const [annotationOpen, setAnnotationOpen] = useState(false)
-  const [annotationMode, setAnnotationMode] = useState<'pan' | 'pen' | 'highlighter' | 'eraser'>('pan')
+  const [annotationMode, setAnnotationMode] = useState<'pan' | 'select' | 'pen' | 'highlighter' | 'eraser' | 'line' | 'arrow' | 'rectangle' | 'ellipse' | 'text'>('pan')
   const [annotationColor, setAnnotationColor] = useState('#d32f2f')
   const [annotationWidth, setAnnotationWidth] = useState(.006)
+  const [annotationOptionsOpen, setAnnotationOptionsOpen] = useState(false)
+  const [annotationSelectedId, setAnnotationSelectedId] = useState<string>()
+  const [snapHighlights, setSnapHighlights] = useState(true)
+  const [annotationDraftStatus, setAnnotationDraftStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle')
+  const [annotationTextEditor, setAnnotationTextEditor] = useState<{ point?: AnnotationPoint; id?: string } | null>(null)
+  const [annotationTextValue, setAnnotationTextValue] = useState('')
   const [annotationsVisible, setAnnotationsVisible] = useState(true)
   const [annotationDraft, setAnnotationDraft] = useState<Record<string, AnnotationStroke[]>>(() => Object.fromEntries(document.pages.map(item => [item.id, item.annotations?.strokes ?? []])))
   const [annotationUndo, setAnnotationUndo] = useState<Record<string, AnnotationStroke[][]>>({})
@@ -1203,6 +1210,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
   const annotationPending = useRef(false)
   const previousReadingMode = useRef(readingMode)
   const annotationExitAfterSave = useRef(false)
+  const annotationDraftTimer = useRef(0)
   const readingState = useRef<ViewerReadingState>({ ...savedReadingState, page: Math.min(Math.max(restoredPage, 0), Math.max(0, document.pages.length - 1)) })
   const readingStateTimer = useRef(0)
   const saveReadingState = useCallback((changes: Partial<ViewerReadingState>) => {
@@ -1251,16 +1259,25 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
     ...document,
     pages: document.pages.map(item => ({ ...item, annotations: { version: 1 as const, strokes: draft[item.id] ?? [] } }))
   })
-  // Drafts stay in this viewer until the user explicitly chooses a save destination.
+  const persistAnnotationDraft = (draft: Record<string, AnnotationStroke[]>) => {
+    setAnnotationDraftStatus('saving')
+    window.clearTimeout(annotationDraftTimer.current)
+    annotationDraftTimer.current = window.setTimeout(() => void annotationDraftService.write(document.id, document.updatedAt, draft).then(saved => setAnnotationDraftStatus(saved ? 'saved' : 'failed')), 350)
+  }
+  useEffect(() => () => window.clearTimeout(annotationDraftTimer.current), [])
+  // Drafts are recovered locally, but the PDF changes only after the user chooses a save destination.
   const updateAnnotationDraft = (draft: Record<string, AnnotationStroke[]>) => {
     annotationDraftRef.current = draft
   }
-  const beginAnnotations = () => {
+  const beginAnnotations = async () => {
     previousReadingMode.current = readingMode
-    const draft = Object.fromEntries(document.pages.map(item => [item.id, item.annotations?.strokes ?? []]))
+    const saved = Object.fromEntries(document.pages.map(item => [item.id, item.annotations?.strokes ?? []]))
+    const recovered = await annotationDraftService.read(document.id, document.updatedAt)
+    const draft = recovered ? Object.fromEntries(document.pages.map(item => [item.id, recovered[item.id] ?? saved[item.id]])) : saved
     annotationDraftRef.current = draft
     setAnnotationDraft(draft); setAnnotationUndo({}); setAnnotationRedo({})
-    setAnnotationError(''); setAnnotationNotice(''); setAnnotationsVisible(true)
+    setAnnotationError(''); setAnnotationNotice(recovered ? 'Recovered your unfinished annotation draft' : ''); setAnnotationsVisible(true)
+    setAnnotationDraftStatus(recovered ? 'saved' : 'idle'); setAnnotationSelectedId(undefined); setAnnotationOptionsOpen(false)
     annotationExitAfterSave.current = false
     setReadingMode('single'); setAnnotationOpen(true); setAnnotationMode('pen')
     setChromeVisible(true); setThumbnailsVisible(false)
@@ -1270,6 +1287,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
     annotationDraftRef.current = draft
     setAnnotationDraft(draft); setAnnotationUndo({}); setAnnotationRedo({})
     setAnnotationMode('pan'); setAnnotationOpen(false); setAnnotationSaveOpen(false)
+    setAnnotationSelectedId(undefined); void annotationDraftService.clear(document.id); setAnnotationDraftStatus('idle')
     setReadingMode(previousReadingMode.current)
     if (annotationExitAfterSave.current) onBack()
   }
@@ -1288,7 +1306,13 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
       setAnnotationRedo(history => ({ ...history, [pageId]: [] }))
     }
     const next = { ...draft, [pageId]: strokes }
-    updateAnnotationDraft(next); setAnnotationDraft(next)
+    updateAnnotationDraft(next); setAnnotationDraft(next); persistAnnotationDraft(next)
+  }
+  const recordAnnotationHistory = () => {
+    if (!current) return
+    const previous = annotationDraftRef.current[current.id] ?? []
+    setAnnotationUndo(history => ({ ...history, [current.id]: [...(history[current.id] ?? []), previous] }))
+    setAnnotationRedo(history => ({ ...history, [current.id]: [] }))
   }
   const undoAnnotation = () => {
     if (!current) return
@@ -1297,7 +1321,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
     const draft = annotationDraftRef.current
     setAnnotationRedo(redo => ({ ...redo, [current.id]: [...(redo[current.id] ?? []), draft[current.id] ?? []] }))
     const next = { ...draft, [current.id]: history.at(-1)! }
-    updateAnnotationDraft(next); setAnnotationDraft(next)
+    updateAnnotationDraft(next); setAnnotationDraft(next); persistAnnotationDraft(next)
     setAnnotationUndo(undo => ({ ...undo, [current.id]: history.slice(0, -1) }))
   }
   const redoAnnotation = () => {
@@ -1307,7 +1331,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
     const draft = annotationDraftRef.current
     setAnnotationUndo(undo => ({ ...undo, [current.id]: [...(undo[current.id] ?? []), draft[current.id] ?? []] }))
     const next = { ...draft, [current.id]: history.at(-1)! }
-    updateAnnotationDraft(next); setAnnotationDraft(next)
+    updateAnnotationDraft(next); setAnnotationDraft(next); persistAnnotationDraft(next)
     setAnnotationRedo(redo => ({ ...redo, [current.id]: history.slice(0, -1) }))
   }
   const saveAnnotations = async (copy: boolean) => {
@@ -1324,6 +1348,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
         if (previousPdfPath && previousPdfPath !== updated.pdfPath) await documentStorageService.removeFile(previousPdfPath)
       }
       setAnnotationMode('pan'); setAnnotationOpen(false); setAnnotationSaveOpen(false); setAnnotationNotice(copy ? 'Annotated copy saved' : 'Annotations saved')
+      setAnnotationSelectedId(undefined); void annotationDraftService.clear(document.id); setAnnotationDraftStatus('idle')
       setReadingMode(previousReadingMode.current)
       if (!copy && annotationExitAfterSave.current) onBack()
     } catch (error) { setAnnotationError(error instanceof Error ? error.message : 'Annotations could not be saved safely.') }
@@ -1333,6 +1358,33 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
   const [externalState, setExternalState] = useState<'idle' | 'working'>('idle')
   const [thumbnailsVisible, setThumbnailsVisible] = useState(false)
   const current = document.pages[page]
+  const selectedAnnotation = current ? (annotationDraft[current.id] ?? []).find(stroke => stroke.id === annotationSelectedId) : undefined
+  const annotationModeLabel = selectedAnnotation ? (selectedAnnotation.tool === 'text' ? 'Text note selected' : 'Annotation selected') : ({ pan: 'Move page', select: 'Select annotation', eraser: 'Erase precisely', highlighter: 'Highlight text', pen: 'Draw with pen', line: 'Draw a line', arrow: 'Draw an arrow', rectangle: 'Draw a rectangle', ellipse: 'Draw an ellipse', text: 'Tap the page to add text' } as const)[annotationMode]
+  useEffect(() => setAnnotationSelectedId(undefined), [page])
+  const updateSelectedAnnotation = (changes: Partial<Pick<AnnotationStroke, 'color' | 'width' | 'fontSize' | 'text'>>) => {
+    if (!current || !selectedAnnotation) return
+    recordAnnotationHistory()
+    const next = { ...annotationDraftRef.current, [current.id]: (annotationDraftRef.current[current.id] ?? []).map(stroke => stroke.id === selectedAnnotation.id ? { ...stroke, ...changes } : stroke) }
+    updateAnnotationDraft(next); setAnnotationDraft(next); persistAnnotationDraft(next)
+  }
+  const deleteSelectedAnnotation = () => {
+    if (!current || !selectedAnnotation) return
+    changeAnnotations(current.id, (annotationDraftRef.current[current.id] ?? []).filter(stroke => stroke.id !== selectedAnnotation.id))
+    setAnnotationSelectedId(undefined)
+  }
+  const openAnnotationTextEditor = (point?: AnnotationPoint, stroke?: AnnotationStroke) => {
+    setAnnotationTextValue(stroke?.tool === 'text' ? stroke.text ?? '' : '')
+    setAnnotationTextEditor(stroke?.tool === 'text' ? { id: stroke.id } : { point })
+  }
+  const saveAnnotationText = () => {
+    if (!current || !annotationTextEditor || !annotationTextValue.trim()) return
+    if (annotationTextEditor.id) updateSelectedAnnotation({ text: annotationTextValue.trim() })
+    else if (annotationTextEditor.point) {
+      const stroke: AnnotationStroke = { id: crypto.randomUUID(), tool: 'text', color: annotationColor, width: annotationWidth, fontSize: .03, points: [annotationTextEditor.point], text: annotationTextValue.trim() }
+      changeAnnotations(current.id, [...(annotationDraftRef.current[current.id] ?? []), stroke]); setAnnotationSelectedId(stroke.id)
+    }
+    setAnnotationTextEditor(null); setAnnotationTextValue(''); setAnnotationMode('select')
+  }
   const detectedCodes = useMemo(() => document.pages.flatMap((item) => item.barcodes ?? []), [document.pages])
   const matches = useMemo(() => pageMatches(document, withinQuery), [document, withinQuery])
   const [activeMatchIndex, setActiveMatchIndex] = useState(0)
@@ -1409,6 +1461,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
       else if (deleteConfirm) setDeleteConfirm(false)
       else if (actionsOpen) closeActions()
       else if (viewControlsOpen) setViewControlsOpen(false)
+      else if (annotationTextEditor) setAnnotationTextEditor(null)
       else if (annotationSaveOpen) { if (!annotationPending.current) setAnnotationSaveOpen(false) }
       else if (annotationOpen) finishAnnotations(true)
       else if (searchOpen) { setWithinQuery(''); setSearchOpen(false) }
@@ -1419,7 +1472,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
     }
     window.addEventListener('local:back', back)
     return () => window.removeEventListener('local:back', back)
-  }, [thumbnailsVisible, deleteConfirm, actionsOpen, viewControlsOpen, annotationSaveOpen, annotationOpen, searchOpen, editingPage, editing, document, onBack])
+  }, [thumbnailsVisible, deleteConfirm, actionsOpen, viewControlsOpen, annotationTextEditor, annotationSaveOpen, annotationOpen, searchOpen, editingPage, editing, document, onBack])
   const openFolderPicker = async () => {
     setActionView('folder')
     setFoldersLoading(true)
@@ -1707,7 +1760,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
         </div>
       )}
       <section className={`document-canvas mode-${readingMode}`} onClick={(event) => { if (!annotationOpen && readingMode !== 'text' && !(event.target as HTMLElement).closest('.zoom-controls,.show-pages-button,.viewer-scrubber,input,label')) { if (browserMode) revealChrome(); else chromeVisible ? setChromeVisible(false) : revealChrome() } }}>
-        {readingMode === 'single' && current ? <ZoomablePage key={current.id} src={current.imageUrl} alt={`Page ${page + 1}`} rotation={current.rotation} highlights={highlights} annotations={annotationDraft[current.id] ?? []} annotationsVisible={annotationsVisible} annotationMode={annotationMode} annotationColor={annotationColor} annotationWidth={annotationWidth} initialView={readingState.current.single} trimMargins={trimMargins} onAnnotationsChange={strokes => changeAnnotations(current.id, strokes)} onViewChange={saveSingleView} onNavigate={navigatePage} /> : readingMode === 'continuous' || readingMode === 'facing' ? <ContinuousPages pages={document.pages.map(item => ({ ...item, annotations: { version: 1, strokes: annotationDraft[item.id] ?? [] } }))} currentPage={page} initialView={initialQuery || initialPage > 0 ? { ...readingState.current.continuous, scrollTop: 0 } : readingState.current.continuous} trimMargins={trimMargins} facing={readingMode === 'facing'} annotationsVisible={annotationsVisible} onViewChange={saveContinuousView} onPage={setPage} /> : <div className="ocr-reading-view"><header><div><strong>Text view</strong><span>Read and copy recognised text</span></div><button onClick={toggleReadAloud}>{speaking ? <VolumeX /> : <Volume2 />} {speaking ? 'Stop' : 'Read aloud'}</button></header><DocumentText key={document.id} document={document} reading currentPage={page} onPage={setPage} /></div>}
+        {readingMode === 'single' && current ? <ZoomablePage key={current.id} src={current.imageUrl} alt={`Page ${page + 1}`} rotation={current.rotation} highlights={highlights} annotations={annotationDraft[current.id] ?? []} annotationsVisible={annotationsVisible} annotationMode={annotationMode} annotationColor={annotationColor} annotationWidth={annotationWidth} selectedAnnotationId={annotationSelectedId} ocrWords={current.ocrWords} snapHighlights={snapHighlights} initialView={readingState.current.single} trimMargins={trimMargins} onAnnotationSelect={setAnnotationSelectedId} onAnnotationEditStart={recordAnnotationHistory} onAnnotationTextRequest={point => openAnnotationTextEditor(point)} onAnnotationsChange={strokes => changeAnnotations(current.id, strokes)} onViewChange={saveSingleView} onNavigate={navigatePage} /> : readingMode === 'continuous' || readingMode === 'facing' ? <ContinuousPages pages={document.pages.map(item => ({ ...item, annotations: { version: 1, strokes: annotationDraft[item.id] ?? [] } }))} currentPage={page} initialView={initialQuery || initialPage > 0 ? { ...readingState.current.continuous, scrollTop: 0 } : readingState.current.continuous} trimMargins={trimMargins} facing={readingMode === 'facing'} annotationsVisible={annotationsVisible} onViewChange={saveContinuousView} onPage={setPage} /> : <div className="ocr-reading-view"><header><div><strong>Text view</strong><span>Read and copy recognised text</span></div><button onClick={toggleReadAloud}>{speaking ? <VolumeX /> : <Volume2 />} {speaking ? 'Stop' : 'Read aloud'}</button></header><DocumentText key={document.id} document={document} reading currentPage={page} onPage={setPage} /></div>}
 
 
         {activeMatch?.pageIndex === page && (
@@ -1720,11 +1773,18 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
         )}
       </section>
       {annotationOpen && current && <aside className="annotation-toolbar" aria-label="Annotation tools">
-        <div className="annotation-mode-label"><PenTool /><span><strong>{annotationMode === 'pan' ? 'Pan and zoom' : 'Drawing'}</strong><small>{annotationNotice || (annotationMode === 'pan' ? 'Choose a tool to continue' : 'Unsaved · tap Done to choose where to save')}</small></span></div>
-        <div role="group" aria-label="Drawing tool"><button className={annotationMode === 'pan' ? 'active' : ''} onClick={() => setAnnotationMode('pan')} aria-label="Pan and zoom"><MousePointer2 /></button><button className={annotationMode === 'pen' ? 'active' : ''} onClick={() => setAnnotationMode('pen')} aria-label="Pen"><Pencil /></button><button className={annotationMode === 'highlighter' ? 'active' : ''} onClick={() => setAnnotationMode('highlighter')} aria-label="Highlighter"><Highlighter /></button><button className={annotationMode === 'eraser' ? 'active' : ''} onClick={() => setAnnotationMode('eraser')} aria-label="Stroke eraser"><Eraser /></button></div>
-        <label className="annotation-color"><span>Colour</span><input type="color" value={annotationColor} onChange={event => setAnnotationColor(event.target.value)} /></label>
-        <label className="annotation-width"><span>Width</span><input type="range" min="0.002" max="0.035" step="0.002" value={annotationWidth} onChange={event => setAnnotationWidth(Number(event.target.value))} /></label>
-        <div role="group" aria-label="Annotation history"><button onClick={undoAnnotation} disabled={!(annotationUndo[current.id]?.length)} aria-label="Undo"><Undo2 /></button><button onClick={redoAnnotation} disabled={!(annotationRedo[current.id]?.length)} aria-label="Redo"><Redo2 /></button><button onClick={() => setAnnotationsVisible(value => !value)} aria-label={annotationsVisible ? 'Hide annotations' : 'Show annotations'}>{annotationsVisible ? <Eye /> : <EyeOff />}</button><button onClick={() => current && changeAnnotations(current.id, [])} disabled={!current || !(annotationDraft[current.id]?.length)} aria-label="Clear page annotations"><Trash2 /></button><button className="done" disabled={annotationBusy} onClick={() => finishAnnotations()}><Check /><span>Done</span></button></div>
+        <header className="annotation-status"><span><strong>{annotationModeLabel}</strong><small>{annotationNotice || (annotationDraftStatus === 'saving' ? 'Saving draft…' : annotationDraftStatus === 'saved' ? 'Draft saved on this device' : annotationDraftStatus === 'failed' ? 'Draft storage is full — finish and save now' : 'Changes stay as a draft until you tap Done')}</small></span><button className="done" disabled={annotationBusy} onClick={() => finishAnnotations()}><Check /><span>Done</span></button></header>
+        <div className="annotation-primary-row">
+          <div role="group" aria-label="Annotation tool"><button className={annotationMode === 'pan' ? 'active' : ''} onClick={() => { setAnnotationMode('pan'); setAnnotationSelectedId(undefined) }} aria-label="Pan and zoom"><Hand /></button><button className={annotationMode === 'select' ? 'active' : ''} onClick={() => setAnnotationMode('select')} aria-label="Select and move annotation"><MousePointer2 /></button><button className={annotationMode === 'pen' ? 'active' : ''} onClick={() => { setAnnotationMode('pen'); setAnnotationSelectedId(undefined) }} aria-label="Pen"><Pencil /></button><button className={annotationMode === 'highlighter' ? 'active' : ''} onClick={() => { setAnnotationMode('highlighter'); setAnnotationSelectedId(undefined) }} aria-label="Highlighter"><Highlighter /></button><button className={annotationMode === 'eraser' ? 'active' : ''} onClick={() => { setAnnotationMode('eraser'); setAnnotationSelectedId(undefined) }} aria-label="Partial eraser"><Eraser /></button></div>
+          <button className={annotationOptionsOpen ? 'active annotation-options-toggle' : 'annotation-options-toggle'} onClick={() => setAnnotationOptionsOpen(value => !value)} aria-label="Annotation options" aria-expanded={annotationOptionsOpen}><SlidersHorizontal /></button>
+        </div>
+        {annotationOptionsOpen ? <section className="annotation-options" aria-label="Tool options">
+          <div className="annotation-create-tools" role="group" aria-label="Shapes and text"><button className={annotationMode === 'line' ? 'active' : ''} onClick={() => { setAnnotationMode('line'); setAnnotationSelectedId(undefined); setAnnotationOptionsOpen(false) }} aria-label="Add line"><Minus /></button><button className={annotationMode === 'arrow' ? 'active' : ''} onClick={() => { setAnnotationMode('arrow'); setAnnotationSelectedId(undefined); setAnnotationOptionsOpen(false) }} aria-label="Add arrow"><ArrowUpRight /></button><button className={annotationMode === 'rectangle' ? 'active' : ''} onClick={() => { setAnnotationMode('rectangle'); setAnnotationSelectedId(undefined); setAnnotationOptionsOpen(false) }} aria-label="Add rectangle"><Square /></button><button className={annotationMode === 'ellipse' ? 'active' : ''} onClick={() => { setAnnotationMode('ellipse'); setAnnotationSelectedId(undefined); setAnnotationOptionsOpen(false) }} aria-label="Add ellipse"><Circle /></button><button className={annotationMode === 'text' ? 'active' : ''} onClick={() => { setAnnotationMode('text'); setAnnotationSelectedId(undefined); setAnnotationOptionsOpen(false) }} aria-label="Add text note"><Type /></button>{selectedAnnotation?.tool === 'text' ? <button className="annotation-edit-text" onClick={() => openAnnotationTextEditor(undefined, selectedAnnotation)} aria-label="Edit selected text"><Pencil /><span>Edit</span></button> : null}</div>
+          <div className="annotation-presets" aria-label="Colour presets">{['#1d1d1f', '#d32f2f', '#1565c0', '#197b55', '#f5c518'].map(color => <button key={color} className={(selectedAnnotation?.color ?? annotationColor) === color ? 'selected' : ''} style={{ '--annotation-swatch': color } as React.CSSProperties} onClick={() => { setAnnotationColor(color); updateSelectedAnnotation({ color }) }} aria-label={`Use ${color}`} />)}</div>
+          <div className="annotation-sizes" role="group" aria-label="Stroke width">{[.004, .008, .016].map(width => <button key={width} className={Math.abs((selectedAnnotation?.width ?? annotationWidth) - width) < .001 ? 'selected' : ''} onClick={() => { setAnnotationWidth(width); updateSelectedAnnotation({ width }) }} aria-label={`${width === .004 ? 'Thin' : width === .008 ? 'Medium' : 'Thick'} stroke`}><i style={{ height: Math.max(2, width * 300) }} /></button>)}</div>
+          {annotationMode === 'highlighter' && current.ocrWords?.length ? <label className="annotation-snap"><input type="checkbox" checked={snapHighlights} onChange={event => setSnapHighlights(event.target.checked)} /><span>Snap to recognised text</span></label> : null}
+          <div className="annotation-actions" role="group" aria-label="Annotation actions"><button onClick={undoAnnotation} disabled={!(annotationUndo[current.id]?.length)} aria-label="Undo"><Undo2 /></button><button onClick={redoAnnotation} disabled={!(annotationRedo[current.id]?.length)} aria-label="Redo"><Redo2 /></button><button onClick={() => setAnnotationsVisible(value => !value)} aria-label={annotationsVisible ? 'Hide annotations' : 'Show annotations'}>{annotationsVisible ? <Eye /> : <EyeOff />}</button>{selectedAnnotation ? <button className="danger" onClick={deleteSelectedAnnotation} aria-label="Delete selected annotation"><Trash2 /></button> : <button className="danger" onClick={() => changeAnnotations(current.id, [])} disabled={!(annotationDraft[current.id]?.length)} aria-label="Clear page annotations"><Trash2 /></button>}</div>
+        </section> : null}
       </aside>}
       {!annotationOpen && <aside className="viewer-scrubber" aria-label="Page navigation">
         <button className={bookmarks.includes(page) ? 'active' : ''} onClick={toggleBookmark} aria-label={bookmarks.includes(page) ? 'Remove bookmark' : 'Bookmark this page'}><Bookmark /></button>
@@ -1758,6 +1818,7 @@ function Viewer({ document, browserMode, initialPage = 0, initialQuery = '', onB
           </section>
         </div>
       )}
+      {annotationTextEditor && <div className="action-sheet-layer" role="presentation"><section className="annotation-text-sheet" role="dialog" aria-modal="true" aria-labelledby="annotation-text-title"><header><div><strong id="annotation-text-title">{annotationTextEditor.id ? 'Edit text note' : 'Add text note'}</strong><span>Text stays attached to this position on the page.</span></div><button onClick={() => setAnnotationTextEditor(null)} aria-label="Cancel text note"><X /></button></header><form onSubmit={event => { event.preventDefault(); saveAnnotationText() }}><label htmlFor="annotation-text">Note text</label><textarea id="annotation-text" value={annotationTextValue} maxLength={500} rows={4} onChange={event => setAnnotationTextValue(event.target.value)} placeholder="Type a short note" autoFocus /><small>{annotationTextValue.length}/500</small><div><button type="button" onClick={() => setAnnotationTextEditor(null)}>Cancel</button><button type="submit" disabled={!annotationTextValue.trim()}>{annotationTextEditor.id ? 'Update note' : 'Add to page'}</button></div></form></section></div>}
       {annotationSaveOpen && <div className="action-sheet-layer" role="presentation"><section className="annotation-save-sheet" role="dialog" aria-modal="true" aria-label="Save annotations"><header><div><strong>Save annotations?</strong><span>{document.pdfPasswordProtected ? 'Edited PDFs will be unlocked. Add a PDF password again before sharing.' : 'Choose where to keep your changes.'}</span></div><button disabled={annotationBusy} onClick={() => setAnnotationSaveOpen(false)} aria-label="Continue annotating"><X /></button></header>{annotationError ? <p className="form-error" role="alert">{annotationError}</p> : null}<button disabled={annotationBusy} onClick={() => void saveAnnotations(true)}><Copy /><span><strong>Save a copy</strong><small>Keep the original unchanged</small></span></button><button disabled={annotationBusy} onClick={() => void saveAnnotations(false)}><Save /><span><strong>Save to original</strong><small>Update this document with your annotations</small></span></button><button disabled={annotationBusy} onClick={discardAnnotations}><Trash2 /><span><strong>Discard changes</strong><small>Return to the last saved annotations</small></span></button>{annotationBusy ? <p role="status"><span className="button-spinner" /> Saving annotations…</p> : null}</section></div>}
 
       {editing ? <div className="tool-sheet-layer"><section className="tool-sheet rename-sheet" role="dialog" aria-modal="true" aria-labelledby="rename-title">
