@@ -2,7 +2,7 @@
 
 ## Versioning
 
-Android `versionName` is read from `package.json`. Set a strictly increasing `LOCAL_VERSION_CODE` for every published build.
+Android `versionName` and `androidVersionCode` are read from `package.json`. Increase both for every published build; `androidVersionCode` must be greater than every previously published APK.
 
 ## One-time signing key creation
 
@@ -19,10 +19,11 @@ $env:LOCAL_RELEASE_STORE_FILE='C:\secure\LOCAL-release.jks'
 $env:LOCAL_RELEASE_STORE_PASSWORD='<secret>'
 $env:LOCAL_RELEASE_KEY_ALIAS='local-release'
 $env:LOCAL_RELEASE_KEY_PASSWORD='<secret>'
-$env:LOCAL_VERSION_CODE='1'
 ```
 
 `LOCAL_APPLICATION_ID` is intentionally unset for real releases. It exists only for isolated signed upgrade tests that must not replace a developer-signed installation.
+
+Before tagging a release, compare `androidVersionCode` with the current public APK using `aapt dump badging`. Keeping the code in source control prevents repository or environment variables from silently producing a downgrade.
 
 ## Release gate
 

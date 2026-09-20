@@ -16,7 +16,7 @@ android {
         applicationId System.getenv('LOCAL_APPLICATION_ID') ?: "in.local.vault"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode Integer.parseInt(System.getenv('LOCAL_VERSION_CODE') ?: '1')
+        versionCode Integer.parseInt(packageMetadata.androidVersionCode.toString())
         versionName packageMetadata.version
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {

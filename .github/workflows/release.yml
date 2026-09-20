@@ -47,7 +47,6 @@ jobs:
           LOCAL_RELEASE_STORE_PASSWORD: ${{ secrets.LOCAL_RELEASE_STORE_PASSWORD }}
           LOCAL_RELEASE_KEY_ALIAS: ${{ secrets.LOCAL_RELEASE_KEY_ALIAS }}
           LOCAL_RELEASE_KEY_PASSWORD: ${{ secrets.LOCAL_RELEASE_KEY_PASSWORD }}
-          LOCAL_VERSION_CODE: ${{ vars.LOCAL_VERSION_CODE }}
         run: bash gradlew lintRelease testReleaseUnitTest assembleRelease
       - name: Verify and name artifacts
         env:
